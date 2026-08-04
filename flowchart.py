@@ -23,6 +23,34 @@ Spec format (JSON, inside a ```flow fence in the markdown source):
 
 Shapes: box (process), terminal (rounded, start/end), decision (diamond),
         io (parallelogram), note (dashed box).
+
+STATE MACHINE DIAGRAMS
+----------------------
+The same spec renders UML-style state charts using three extra shapes and
+self-transitions:
+
+    {
+      "nodes": [
+        {"id":"I",    "col":0, "row":0, "shape":"start"},
+        {"id":"RUN",  "col":0, "row":1, "text":"RUNNING", "shape":"state"},
+        {"id":"STOP", "col":0, "row":2, "text":"HALTED",  "shape":"final"}
+      ],
+      "edges": [
+        ["I","RUN"],
+        ["RUN","RUN","tick",  "self"],        # self-transition, loop on top
+        ["RUN","RUN","retry", "self-right"],  # or self-left / self-right
+        ["RUN","STOP","fault"]
+      ]
+    }
+
+  state  - rounded rectangle, the resting condition of the machine
+  start  - small filled disc, the initial pseudostate (no text)
+  final  - ringed disc, a terminal state (no text)
+
+A self-transition is any edge whose source and destination are the same node;
+route "self" (or "self-top") loops above the state, "self-left" / "self-right"
+loop out to that side. Use those when a state has an action it repeats while
+remaining in that state.
 """
 
 import json
@@ -32,7 +60,8 @@ import textwrap
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch, Polygon, FancyArrowPatch
+from matplotlib.patches import (FancyBboxPatch, Polygon, FancyArrowPatch,
+                                Circle)
 
 # ION Science-ish palette: restrained, prints legibly in mono.
 STYLE = {
@@ -41,7 +70,15 @@ STYLE = {
     "decision": {"fc": "#FCF0D8", "ec": "#B8860B", "lw": 1.4},
     "io":       {"fc": "#EDE4F3", "ec": "#6B4A8F", "lw": 1.4},
     "note":     {"fc": "#F5F5F5", "ec": "#888888", "lw": 1.0},
+    # State-chart shapes.
+    "state":    {"fc": "#DCE9F5", "ec": "#1F4E79", "lw": 1.5},
+    "start":    {"fc": "#333333", "ec": "#333333", "lw": 1.2},
+    "final":    {"fc": "#333333", "ec": "#333333", "lw": 1.5},
 }
+
+# Shapes drawn at a fixed size with no interior label (UML pseudostates).
+MARKER_SHAPES = ("start", "final")
+MARKER_D = 0.26           # pseudostate disc diameter (inches)
 
 # One data unit == one inch on the final page. Keeping the two identical
 # makes text measurement scale-stable: a label measured in inches can be
@@ -68,12 +105,16 @@ def _xy(node):
 def _place_text(ax, node):
     """Pass 1: lay the label down so its true rendered size can be measured."""
     shape = node.get("shape", "box")
+    if shape in MARKER_SHAPES:
+        node["_txt"] = None         # pseudostates carry no interior label
+        return
+
     x, y = _xy(node)
     label = _wrap(node["text"], shape)
     node["_txt"] = ax.text(
         x, y, label, ha="center", va="center", fontsize=FONT,
         zorder=3, linespacing=1.35,
-        fontweight="bold" if shape == "terminal" else "normal")
+        fontweight="bold" if shape in ("terminal", "state") else "normal")
 
 
 def _measure(ax, fig, node):
@@ -85,6 +126,10 @@ def _measure(ax, fig, node):
     (capitals, underscores) and the text overruns its outline.
     """
     shape = node.get("shape", "box")
+    if shape in MARKER_SHAPES:
+        node["_w"], node["_h"] = MARKER_D, MARKER_D
+        return
+
     bb = node["_txt"].get_window_extent(renderer=fig.canvas.get_renderer())
     tw = bb.width / fig.dpi
     th = bb.height / fig.dpi
@@ -105,7 +150,16 @@ def _draw_shape(ax, node):
     x, y = _xy(node)
     w, h = node["_w"], node["_h"]
 
-    if shape == "decision":
+    if shape == "start":
+        ax.add_patch(Circle((x, y), MARKER_D / 2, facecolor=st["fc"],
+                            edgecolor=st["ec"], linewidth=st["lw"], zorder=2))
+    elif shape == "final":
+        # UML final state: open ring with a filled bullseye.
+        ax.add_patch(Circle((x, y), MARKER_D / 2, facecolor="white",
+                            edgecolor=st["ec"], linewidth=st["lw"], zorder=2))
+        ax.add_patch(Circle((x, y), MARKER_D / 2 * 0.55, facecolor=st["fc"],
+                            edgecolor="none", zorder=3))
+    elif shape == "decision":
         pts = [(x, y + h / 2), (x + w / 2, y), (x, y - h / 2), (x - w / 2, y)]
         ax.add_patch(Polygon(pts, closed=True, facecolor=st["fc"],
                              edgecolor=st["ec"], linewidth=st["lw"], zorder=2))
@@ -116,7 +170,7 @@ def _draw_shape(ax, node):
         ax.add_patch(Polygon(pts, closed=True, facecolor=st["fc"],
                              edgecolor=st["ec"], linewidth=st["lw"], zorder=2))
     else:
-        rounding = 0.30 if shape == "terminal" else 0.04
+        rounding = 0.30 if shape in ("terminal", "state") else 0.04
         ax.add_patch(FancyBboxPatch(
             (x - w / 2, y - h / 2), w, h,
             boxstyle=f"round,pad=0,rounding_size={rounding}",
@@ -135,9 +189,50 @@ def _anchor(node, side):
     }[side]
 
 
-def _draw_edge(ax, src, dst, label="", route="", extent=None):
+def _draw_self_edge(ax, node, label, route, bounds):
+    """A state that transitions to itself: loop out and back on one side.
+
+    Drawn as a single curved arrow between two points on the same edge of the
+    node, so it reads as a transition rather than a decoration. The loop's far
+    side is fed into the extent lists or it renders clipped.
+    """
+    x, y = _xy(node)
+    w, h = node["_w"], node["_h"]
+    side = route.replace("self", "").lstrip("-") or "top"
+
+    if side == "left":
+        p0, p1 = (x - w / 2, y + h * 0.22), (x - w / 2, y - h * 0.22)
+        rad, reach = 1.5, x - w / 2 - 0.42
+        lx, ly, rot = reach - 0.06, y, 90
+        bounds["xs"].append(reach - 0.12)
+    elif side == "right":
+        p0, p1 = (x + w / 2, y - h * 0.22), (x + w / 2, y + h * 0.22)
+        rad, reach = 1.5, x + w / 2 + 0.42
+        lx, ly, rot = reach + 0.06, y, 90
+        bounds["xs"].append(reach + 0.12)
+    else:                                   # top
+        p0, p1 = (x - w * 0.20, y + h / 2), (x + w * 0.20, y + h / 2)
+        rad, reach = -1.5, y + h / 2 + 0.34
+        lx, ly, rot = x, reach + 0.10, 0
+        bounds["ys"].append(reach + 0.22)
+
+    ax.add_patch(FancyArrowPatch(
+        p0, p1, connectionstyle=f"arc3,rad={rad}", arrowstyle="-|>",
+        mutation_scale=11, color="#555555", lw=1.1, zorder=1))
+
+    if label:
+        ax.text(lx, ly, label, fontsize=FONT - 0.8, ha="center", va="center",
+                rotation=rot, color="#333333",
+                bbox=dict(fc="white", ec="none", pad=1.0))
+
+
+def _draw_edge(ax, src, dst, label="", route="", bounds=None):
     sx, sy = _xy(src)
     dx, dy = _xy(dst)
+
+    if src is dst or route.startswith("self"):
+        _draw_self_edge(ax, src, label, route or "self", bounds)
+        return
 
     if route in ("left", "right"):
         # Route around the side -- used for feedback/retry loops.
@@ -158,8 +253,8 @@ def _draw_edge(ax, src, dst, label="", route="", extent=None):
                     bbox=dict(fc="white", ec="none", pad=1.0))
         # Feed the loop's outer rail into the axis-limit calculation, or it
         # gets clipped away and the connector renders as two stray stubs.
-        if extent is not None:
-            extent.append(mid + (-0.30 if route == "left" else 0.30))
+        if bounds is not None:
+            bounds["xs"].append(mid + (-0.30 if route == "left" else 0.30))
         return
 
     # Straight / elbow routing between the natural facing sides.
@@ -221,14 +316,14 @@ def render(spec, out_path):
     for n in spec["nodes"]:
         _draw_shape(ax, n)
 
-    extent = []
+    bounds = {"xs": [], "ys": []}
     for e in spec.get("edges", []):
         src, dst = nodes[e[0]], nodes[e[1]]
         label = e[2] if len(e) > 2 else ""
         route = e[3] if len(e) > 3 else ""
-        _draw_edge(ax, src, dst, label, route, extent)
+        _draw_edge(ax, src, dst, label, route, bounds)
 
-    xs, ys = list(extent), []
+    xs, ys = list(bounds["xs"]), list(bounds["ys"])
     for n in spec["nodes"]:
         x, y = _xy(n)
         xs += [x - n["_w"] / 2 - 0.18, x + n["_w"] / 2 + 0.18]
