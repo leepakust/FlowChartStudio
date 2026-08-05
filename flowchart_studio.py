@@ -8,9 +8,16 @@ what you see here is byte-identical to what would land in a docx figure.
 Run:
     python flowchart_studio.py
 
+Editing in another editor (Notepad++, VS Code, ...) works too: open the spec
+here once, then keep editing it externally. With "Auto-reload" ticked the
+studio watches the file's timestamp and re-reads it the moment you save, so
+the preview tracks your external editor with no clicks at all. Ctrl+R forces
+a reload by hand.
+
 Shortcuts:
     F5 / Ctrl+Enter   render now
     Ctrl+O            open a .json spec
+    Ctrl+R            reload the open spec from disk
     Ctrl+S            save the current spec
     Ctrl+Shift+S      export the current render as PNG
     Ctrl+C (in preview) copy the current render to the clipboard (paste
@@ -39,6 +46,11 @@ except ImportError:
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(os.path.dirname(HERE), "_src")
 TMP_PNG = os.path.join(HERE, "_studio_preview.png")
+
+# How often to check whether the open spec changed underneath us. Polling
+# mtime rather than using a filesystem watcher keeps this dependency-free;
+# sub-second is quick enough to feel instant when saving from Notepad++.
+DISK_POLL_MS = 600
 
 DEFAULT_SPEC = """{
   "w": 5.0,
@@ -77,8 +89,24 @@ HELP_TEXT = """Spec format (JSON)
   ]
 }
 
+Edge fields: [src, dst, label, route, shift, lane]
+  shift  slides BOTH ends along the side they attach to (inches). Without
+         it every edge touching a node lands on the same mid-point and
+         they overdraw into one line. For an A->B / B->A pair, give one
+         +0.26 and the other -0.26 to get two clean parallel arrows.
+  lane   pushes a "left"/"right" rail further out, so two side-routed
+         edges on the same flank do not share one track.
+
 Shapes: box, terminal (rounded), decision (diamond), io (parallelogram),
         note (dashed box)
+
+State machines: state (rounded, bold), start (filled disc, no text),
+        final (ringed disc, no text). A self-transition is an edge whose
+        source and target are the same node, with route "self" (loops on
+        top), "self-left" or "self-right":
+            ["RUN", "RUN", "tick", "self"]
+        Repeated work that does NOT leave a state usually reads better as
+        a "do / ..." line inside the state box than as a self-loop.
 
 Layout notes (learned the hard way while building the design docs):
   - col/row are a grid; each unit is roughly one inch on the page.
@@ -104,6 +132,10 @@ class FlowchartStudio(tk.Tk):
         self._auto = tk.BooleanVar(value=True)
         self._examples = {}              # label -> json text
 
+        self._path = None               # spec file currently open, if any
+        self._disk_mtime = None         # its mtime when we last read/wrote it
+        self._autoreload = tk.BooleanVar(value=True)
+
         self._build_menu()
         self._build_toolbar()
         self._build_body()
@@ -116,6 +148,7 @@ class FlowchartStudio(tk.Tk):
         self.bind_all("<F5>", lambda e: self.render_now())
         self.bind_all("<Control-Return>", lambda e: self.render_now())
         self.bind_all("<Control-o>", lambda e: self.open_spec())
+        self.bind_all("<Control-r>", lambda e: self.reload_spec())
         self.bind_all("<Control-s>", lambda e: self.save_spec())
         self.bind_all("<Control-S>", lambda e: self.export_png())
         self.editor.bind("<<Modified>>", self._on_modified)
@@ -123,6 +156,7 @@ class FlowchartStudio(tk.Tk):
         self.bind("<Configure>", self._on_resize, add="+")
 
         self.after(150, self.render_now)
+        self.after(DISK_POLL_MS, self._poll_disk)
 
     # -- UI construction -----------------------------------------------
     def _build_menu(self):
@@ -130,6 +164,8 @@ class FlowchartStudio(tk.Tk):
         filem = tk.Menu(m, tearoff=0)
         filem.add_command(label="New", command=self.new_spec)
         filem.add_command(label="Open spec...  (Ctrl+O)", command=self.open_spec)
+        filem.add_command(label="Reload from disk  (Ctrl+R)",
+                          command=self.reload_spec)
         filem.add_command(label="Save spec...  (Ctrl+S)", command=self.save_spec)
         filem.add_separator()
         filem.add_command(label="Export PNG...  (Ctrl+Shift+S)",
@@ -150,6 +186,14 @@ class FlowchartStudio(tk.Tk):
         ttk.Button(bar, text="Render (F5)", command=self.render_now).pack(
             side=tk.LEFT, padx=(0, 8))
         ttk.Checkbutton(bar, text="Auto-render", variable=self._auto).pack(
+            side=tk.LEFT, padx=(0, 12))
+
+        ttk.Separator(bar, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=(0, 12))
+        ttk.Button(bar, text="Reload (Ctrl+R)", command=self.reload_spec).pack(
+            side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(bar, text="Auto-reload",
+                        variable=self._autoreload).pack(
             side=tk.LEFT, padx=(0, 12))
 
         ttk.Label(bar, text="Example:").pack(side=tk.LEFT)
@@ -255,6 +299,11 @@ class FlowchartStudio(tk.Tk):
             return
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", spec)
+        # Examples come out of a .md block, not a spec file - drop any file
+        # we were watching so Reload cannot pull an unrelated diagram back.
+        self._path = None
+        self._disk_mtime = None
+        self._set_title()
         self._mark_clean()
         self.render_now()
 
@@ -278,6 +327,10 @@ class FlowchartStudio(tk.Tk):
     def new_spec(self):
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", DEFAULT_SPEC)
+        # No longer tied to a file - stop watching the previous one.
+        self._path = None
+        self._disk_mtime = None
+        self._set_title()
         self._mark_clean()
         self.render_now()
 
@@ -287,15 +340,89 @@ class FlowchartStudio(tk.Tk):
                                                      ("All files", "*.*")])
         if not path:
             return
-        try:
-            text = open(path, encoding="utf8").read()
-        except OSError as exc:
-            messagebox.showerror("Open failed", str(exc))
+        if not os.path.exists(path):
+            messagebox.showerror("Open failed", f"No such file:\n{path}")
             return
+        self._path = path
+        if not self._load_from_disk():
+            self._path = None
+            self._set_title()
+
+    def reload_spec(self):
+        """Re-read the open spec from disk (Ctrl+R / toolbar button).
+
+        For the "edit in Notepad++, preview here" workflow: nothing needs
+        closing and reopening, and the file dialog is skipped entirely.
+        """
+        if not self._path:
+            messagebox.showinfo(
+                "Nothing to reload",
+                "No spec file is open.\n\nUse File > Open spec (Ctrl+O) "
+                "first; after that Reload re-reads that same file.")
+            return
+        if self.editor.edit_modified() and not messagebox.askyesno(
+                "Discard editor changes?",
+                f"{os.path.basename(self._path)} will be re-read from disk "
+                "and the unsaved edits in this window will be lost.\n\n"
+                "Reload anyway?"):
+            return
+        self._load_from_disk()
+
+    def _load_from_disk(self):
+        """Pull the file into the editor and re-render. True if it worked."""
+        try:
+            text = open(self._path, encoding="utf8").read()
+            mtime = os.path.getmtime(self._path)
+        except OSError as exc:
+            self.status.set(f"Reload failed: {exc}")
+            return False
+
+        # An editor mid-save can momentarily present an empty file. Treat
+        # that as "not ready" rather than wiping the preview -- the next
+        # poll picks up the real content a fraction of a second later.
+        if not text.strip():
+            self.status.set("File is empty on disk - waiting for the save "
+                            "to finish.")
+            return False
+
+        # Keep the scroll position: an external edit should not throw the
+        # view back to the top every time it is saved.
+        yview = self.editor.yview()[0]
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", text)
+        self.editor.yview_moveto(yview)
+
+        self._disk_mtime = mtime
         self._mark_clean()
+        self._set_title()
         self.render_now()
+        return True
+
+    def _poll_disk(self):
+        """Watch the open spec for external edits; reload when it changes."""
+        try:
+            if (self._path is not None) and self._autoreload.get():
+                mtime = os.path.getmtime(self._path)
+                if (self._disk_mtime is not None) and (mtime > self._disk_mtime):
+                    if self.editor.edit_modified():
+                        # Never silently destroy unsaved work - say so and
+                        # let the user decide via Ctrl+R.
+                        self._disk_mtime = mtime
+                        self.status.set(
+                            f"{os.path.basename(self._path)} changed on disk, "
+                            "but this window has unsaved edits - Ctrl+R to "
+                            "take the disk copy.")
+                    else:
+                        self._load_from_disk()
+        except OSError:
+            pass                # file temporarily gone mid-save; try again
+        self.after(DISK_POLL_MS, self._poll_disk)
+
+    def _set_title(self):
+        if self._path:
+            self.title(f"Flowchart Studio - {os.path.basename(self._path)}")
+        else:
+            self.title("Flowchart Studio")
 
     def save_spec(self):
         path = filedialog.asksaveasfilename(
@@ -309,6 +436,16 @@ class FlowchartStudio(tk.Tk):
         except OSError as exc:
             messagebox.showerror("Save failed", str(exc))
             return
+
+        # Adopt this file as the open one, so Reload / auto-reload now track
+        # it and our own write is not mistaken for an external edit.
+        self._path = path
+        try:
+            self._disk_mtime = os.path.getmtime(path)
+        except OSError:
+            self._disk_mtime = None
+        self._mark_clean()
+        self._set_title()
         self.status.set(f"Saved spec to {path}")
 
     def export_png(self):

@@ -17,9 +17,18 @@ Spec format (JSON, inside a ```flow fence in the markdown source):
         ["A","B"],
         ["B","C"],
         ["C","D","yes"],
-        ["C","B","no","left"]       # 4th field routes the edge around the side
+        ["C","B","no","left"],      # 4th field routes the edge around the side
+        ["C","B","alt","left",0.25,0.5]
       ]
     }
+
+Edge fields: [src, dst, label, route, shift, lane]
+
+  shift - slides BOTH endpoints along the node side they attach to (inches).
+          Use it when several edges touch the same node: without it they all
+          land on the node's mid-point and overdraw each other.
+  lane  - pushes a "left"/"right" routed rail further out, so two side-routed
+          edges on the same flank stay visually separate.
 
 Shapes: box (process), terminal (rounded, start/end), decision (diamond),
         io (parallelogram), note (dashed box).
@@ -178,14 +187,21 @@ def _draw_shape(ax, node):
             linestyle="--" if shape == "note" else "-", zorder=2))
 
 
-def _anchor(node, side):
+def _anchor(node, side, shift=0.0):
+    """Connection point on one side of a node.
+
+    `shift` slides the point ALONG that side (inches): vertically for the
+    left/right sides, horizontally for top/bottom. Without it every edge
+    touching a node lands on the same mid-point, so several connections to
+    one state collapse into a single line and the diagram becomes unreadable.
+    """
     x, y = _xy(node)
     w, h = node["_w"], node["_h"]
     return {
-        "top":    (x, y + h / 2),
-        "bottom": (x, y - h / 2),
-        "left":   (x - w / 2, y),
-        "right":  (x + w / 2, y),
+        "top":    (x + shift, y + h / 2),
+        "bottom": (x + shift, y - h / 2),
+        "left":   (x - w / 2, y + shift),
+        "right":  (x + w / 2, y + shift),
     }[side]
 
 
@@ -226,7 +242,8 @@ def _draw_self_edge(ax, node, label, route, bounds):
                 bbox=dict(fc="white", ec="none", pad=1.0))
 
 
-def _draw_edge(ax, src, dst, label="", route="", bounds=None):
+def _draw_edge(ax, src, dst, label="", route="", bounds=None, shift=0.0,
+               lane=0.0):
     sx, sy = _xy(src)
     dx, dy = _xy(dst)
 
@@ -237,9 +254,11 @@ def _draw_edge(ax, src, dst, label="", route="", bounds=None):
     if route in ("left", "right"):
         # Route around the side -- used for feedback/retry loops.
         side = "left" if route == "left" else "right"
-        p0 = _anchor(src, side)
-        p1 = _anchor(dst, side)
-        off = 0.62 * (-1 if route == "left" else 1)
+        p0 = _anchor(src, side, shift)
+        p1 = _anchor(dst, side, shift)
+        # `lane` pushes this rail further out so two side-routed edges on the
+        # same flank run as separate lines instead of one overdrawn stripe.
+        off = (0.62 + lane) * (-1 if route == "left" else 1)
         mid = (min(p0[0], p1[0]) + off) if route == "left" \
             else (max(p0[0], p1[0]) + off)
         ax.plot([p0[0], mid, mid, p1[0]], [p0[1], p0[1], p1[1], p1[1]],
@@ -266,8 +285,8 @@ def _draw_edge(ax, src, dst, label="", route="", bounds=None):
         s_side = "bottom" if dy < sy else "top"
         d_side = "left" if dx > sx else "right"
 
-    p0 = _anchor(src, s_side)
-    p1 = _anchor(dst, d_side)
+    p0 = _anchor(src, s_side, shift)
+    p1 = _anchor(dst, d_side, shift)
 
     if s_side in ("bottom", "top") and d_side in ("left", "right"):
         ax.plot([p0[0], p0[0]], [p0[1], p1[1]], color="#555555", lw=1.1, zorder=1)
@@ -321,7 +340,9 @@ def render(spec, out_path):
         src, dst = nodes[e[0]], nodes[e[1]]
         label = e[2] if len(e) > 2 else ""
         route = e[3] if len(e) > 3 else ""
-        _draw_edge(ax, src, dst, label, route, bounds)
+        shift = float(e[4]) if len(e) > 4 else 0.0
+        lane = float(e[5]) if len(e) > 5 else 0.0
+        _draw_edge(ax, src, dst, label, route, bounds, shift, lane)
 
     xs, ys = list(bounds["xs"]), list(bounds["ys"])
     for n in spec["nodes"]:

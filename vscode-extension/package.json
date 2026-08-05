@@ -1,0 +1,35 @@
+{
+  "name": "flowchart-studio-preview",
+  "displayName": "Flowchart Studio Preview",
+  "description": "Renders ```flow fenced code blocks (Flowchart Studio spec) inline in the built-in Markdown preview.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "markdown.markdownItPlugins": true,
+    "configuration": {
+      "title": "Flowchart Studio Preview",
+      "properties": {
+        "flowchartStudio.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to the Python executable used to run flowchart.py."
+        },
+        "flowchartStudio.scriptPath": {
+          "type": "string",
+          "default": "C:\\MyFile\\Tools\\FlowChartStudio\\flowchart.py",
+          "description": "Path to flowchart.py."
+        }
+      }
+    }
+  }
+}
