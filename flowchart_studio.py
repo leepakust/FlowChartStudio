@@ -1,18 +1,23 @@
 """Flowchart Studio -- a small desktop UI around flowchart.py.
 
-Lets you write/edit a flowchart JSON spec and see the rendered PNG update
-live, without going through mkdocx.py / build.py / a Word rebuild at all.
-Uses the exact same render() function the design docs are built with, so
-what you see here is byte-identical to what would land in a docx figure.
-
-Run:
-    python flowchart_studio.py
+Lets you write/edit a diagram JSON spec (flowchart/state-machine, timeline,
+or sequence diagram) and see the rendered PNG update live, without going
+through mkdocx.py / build.py / a Word rebuild at all. Uses the exact same
+render functions the design docs are built with, so what you see here is
+byte-identical to what would land in a docx figure.
 
 Editing in another editor (Notepad++, VS Code, ...) works too: open the spec
 here once, then keep editing it externally. With "Auto-reload" ticked the
 studio watches the file's timestamp and re-reads it the moment you save, so
 the preview tracks your external editor with no clicks at all. Ctrl+R forces
 a reload by hand.
+
+The "Kind" selector picks which flowchart.py renderer is used - it must
+match the spec you are editing (a ```timeline fence needs "Kind: timeline",
+etc). Picking an example from the dropdown switches it automatically.
+
+Run:
+    python flowchart_studio.py
 
 Shortcuts:
     F5 / Ctrl+Enter   render now
@@ -29,7 +34,6 @@ import io
 import json
 import os
 import re
-import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -52,12 +56,45 @@ TMP_PNG = os.path.join(HERE, "_studio_preview.png")
 # sub-second is quick enough to feel instant when saving from Notepad++.
 DISK_POLL_MS = 600
 
-DEFAULT_SPEC = """{
+# Diagram kind -> (renderer, fenced-code language it corresponds to in the
+# markdown source). Keep this in step with mkdocx.py's DIAGRAM_RENDERERS -
+# both dispatch the same three kinds by the same fence names.
+RENDERERS = {
+    "flow":     (flowchart.render,          "flow"),
+    "timeline": (flowchart.render_timeline, "timeline"),
+    "sequence": (flowchart.render_sequence, "sequence"),
+}
+KIND_LABELS = list(RENDERERS.keys())
+
+
+def _detect_kind(spec):
+    """Guess a spec's diagram kind from its own top-level keys.
+
+    Without this, opening a file only loads its TEXT - the Kind selector is
+    left wherever it happened to be (the default "flow", most of the time),
+    so a timeline or sequence spec renders against the wrong function and
+    fails with a confusing KeyError instead of a picture. The three formats
+    never share a top-level key, so detection is unambiguous whenever the
+    spec is complete enough to identify; mid-edit/incomplete JSON returns
+    None and the caller leaves the current selection alone.
+    """
+    if not isinstance(spec, dict):
+        return None
+    if "actors" in spec and "messages" in spec:
+        return "sequence"
+    if "lanes" in spec:
+        return "timeline"
+    if "nodes" in spec:
+        return "flow"
+    return None
+
+DEFAULT_SPECS = {
+    "flow": """{
   "w": 5.0,
   "nodes": [
-    {"id":"A","col":0,"row":0,"text":"Start","shape":"terminal"},
-    {"id":"B","col":0,"row":1,"text":"Do work","shape":"box"},
-    {"id":"C","col":0,"row":2,"text":"OK?","shape":"decision"},
+    {"id":"A","col":0,"row":0,"text":"Start",   "shape":"terminal"},
+    {"id":"B","col":0,"row":1,"text":"Do work", "shape":"box"},
+    {"id":"C","col":0,"row":2,"text":"OK?",     "shape":"decision"},
     {"id":"D","col":1,"row":2,"text":"Handle error","shape":"note"}
   ],
   "edges": [
@@ -67,57 +104,46 @@ DEFAULT_SPEC = """{
     ["D","B","retry","right"]
   ]
 }
-"""
-
-HELP_TEXT = """Spec format (JSON)
-
-{
-  "w": 5.0,                # optional hint; boxes size themselves to
-                            # their text regardless
-  "caption": "...",        # optional, shown under the figure in docs
-  "nodes": [
-    {"id":"A", "col":0, "row":0, "text":"Start", "shape":"terminal"},
-    ...
+""",
+    "timeline": """{
+  "title": "Example timeline",
+  "duration_ms": 300,
+  "lanes": [
+    {"id":"a", "label":"Lane A"},
+    {"id":"b", "label":"Lane B"}
   ],
-  "edges": [
-    ["A", "B"],                    plain arrow
-    ["B", "C", "yes"],             labelled arrow
-    ["C", "B", "retry", "left"],   4th field routes the edge as a side
-    ["C", "D", "retry", "right"]   rail -- use this for any loop-back
-                                   edge so it cannot cut through a node
-                                   sitting between source and target
+  "bars": [
+    {"lane":"a", "start":0,   "end":120, "label":"busy", "style":"warn"},
+    {"lane":"b", "start":0,   "end":300, "label":"awake", "style":"ok"}
+  ],
+  "events": [
+    {"t":150, "label":"something\\nhappens", "style":"state"}
+  ],
+  "ticks": [
+    {"lane":"a", "t":10}, {"lane":"a", "t":20}, {"lane":"a", "t":30}
   ]
 }
+""",
+    "sequence": """{
+  "title": "Example sequence",
+  "actors": [
+    {"id":"a", "label":"Caller"},
+    {"id":"b", "label":"Callee"}
+  ],
+  "messages": [
+    {"from":"a", "to":"b", "label":"call()"},
+    {"from":"b", "to":"b", "label":"self-check", "self":true},
+    {"from":"b", "to":"a", "label":"return", "dashed":true},
+    {"note":"~10 ms later"}
+  ]
+}
+""",
+}
 
-Edge fields: [src, dst, label, route, shift, lane]
-  shift  slides BOTH ends along the side they attach to (inches). Without
-         it every edge touching a node lands on the same mid-point and
-         they overdraw into one line. For an A->B / B->A pair, give one
-         +0.26 and the other -0.26 to get two clean parallel arrows.
-  lane   pushes a "left"/"right" rail further out, so two side-routed
-         edges on the same flank do not share one track.
-
-Shapes: box, terminal (rounded), decision (diamond), io (parallelogram),
-        note (dashed box)
-
-State machines: state (rounded, bold), start (filled disc, no text),
-        final (ringed disc, no text). A self-transition is an edge whose
-        source and target are the same node, with route "self" (loops on
-        top), "self-left" or "self-right":
-            ["RUN", "RUN", "tick", "self"]
-        Repeated work that does NOT leave a state usually reads better as
-        a "do / ..." line inside the state box than as a self-loop.
-
-Layout notes (learned the hard way while building the design docs):
-  - col/row are a grid; each unit is roughly one inch on the page.
-  - A same-column vertical edge that skips over a row where another
-    node sits will be drawn straight through that node. Either put the
-    edge's target on an unoccupied row/column, or use route "left"/
-    "right" to send it around the side.
-  - Two side-routed edges from the same node, going different
-    directions, should use opposite routes ("left" for one, "right"
-    for the other) or they will land on the same rail and overlap.
-"""
+# The studio's help is just flowchart.py's own module docstring - showing it
+# verbatim (rather than a hand-maintained copy) means the two files cannot
+# drift out of sync the way the old static HELP_TEXT eventually would.
+HELP_TEXT = flowchart.__doc__ or "(no docstring found on flowchart.py)"
 
 
 class FlowchartStudio(tk.Tk):
@@ -130,7 +156,8 @@ class FlowchartStudio(tk.Tk):
         self._current_image = None      # full-res PIL image, last good render
         self._zoom = tk.StringVar(value="Fit")
         self._auto = tk.BooleanVar(value=True)
-        self._examples = {}              # label -> json text
+        self._kind = tk.StringVar(value="flow")
+        self._examples = {}              # label -> (json text, kind)
 
         self._path = None               # spec file currently open, if any
         self._disk_mtime = None         # its mtime when we last read/wrote it
@@ -142,7 +169,7 @@ class FlowchartStudio(tk.Tk):
         self._build_statusbar()
 
         self._load_examples()
-        self.editor.insert("1.0", DEFAULT_SPEC)
+        self.editor.insert("1.0", DEFAULT_SPECS["flow"])
         self._mark_clean()
 
         self.bind_all("<F5>", lambda e: self.render_now())
@@ -188,6 +215,12 @@ class FlowchartStudio(tk.Tk):
         ttk.Checkbutton(bar, text="Auto-render", variable=self._auto).pack(
             side=tk.LEFT, padx=(0, 12))
 
+        ttk.Label(bar, text="Kind:").pack(side=tk.LEFT)
+        kind_box = ttk.Combobox(bar, width=10, state="readonly",
+                                textvariable=self._kind, values=KIND_LABELS)
+        kind_box.pack(side=tk.LEFT, padx=(4, 12))
+        kind_box.bind("<<ComboboxSelected>>", lambda e: self.render_now())
+
         ttk.Separator(bar, orient=tk.VERTICAL).pack(
             side=tk.LEFT, fill=tk.Y, padx=(0, 12))
         ttk.Button(bar, text="Reload (Ctrl+R)", command=self.reload_spec).pack(
@@ -197,7 +230,7 @@ class FlowchartStudio(tk.Tk):
             side=tk.LEFT, padx=(0, 12))
 
         ttk.Label(bar, text="Example:").pack(side=tk.LEFT)
-        self.example_box = ttk.Combobox(bar, width=48, state="readonly")
+        self.example_box = ttk.Combobox(bar, width=44, state="readonly")
         self.example_box.pack(side=tk.LEFT, padx=(4, 12))
         self.example_box.bind("<<ComboboxSelected>>", self._on_example_pick)
 
@@ -269,8 +302,14 @@ class FlowchartStudio(tk.Tk):
 
     # -- Examples --------------------------------------------------------
     def _load_examples(self):
+        """Scan _src/*.md for every fenced ```flow / ```timeline / ```sequence
+        block flowchart.py can render, so all three kinds get real,
+        already-in-the-docs examples rather than just the one built-in
+        default per kind.
+        """
         pattern = os.path.join(SRC_DIR, "*.md")
-        block_re = re.compile(r"```flow\s*\n(.*?)```", re.S)
+        fence_re = re.compile(
+            r"```(flow|timeline|sequence)\s*\n(.*?)```", re.S)
         found = []
         for path in sorted(glob.glob(pattern)):
             name = os.path.basename(path)
@@ -278,15 +317,18 @@ class FlowchartStudio(tk.Tk):
                 text = open(path, encoding="utf8").read()
             except OSError:
                 continue
-            for i, m in enumerate(block_re.finditer(text), start=1):
-                block = m.group(1).strip()
+            counters = {}
+            for kind, block in fence_re.findall(text):
+                block = block.strip()
                 try:
                     spec = json.loads(block)
                 except json.JSONDecodeError:
                     continue
-                caption = spec.get("caption", f"figure {i}")
-                label = f"{name} — {caption}"
-                found.append((label, block))
+                counters[kind] = counters.get(kind, 0) + 1
+                caption = spec.get("caption") or spec.get("title") \
+                    or f"{kind} {counters[kind]}"
+                label = f"{name} [{kind}] - {caption}"
+                found.append((label, (block, kind)))
         self._examples = dict(found)
         self.example_box["values"] = list(self._examples.keys())
         self.status.set(f"Ready. {len(found)} example figures loaded from "
@@ -294,11 +336,13 @@ class FlowchartStudio(tk.Tk):
 
     def _on_example_pick(self, _event):
         label = self.example_box.get()
-        spec = self._examples.get(label)
-        if spec is None:
+        entry = self._examples.get(label)
+        if entry is None:
             return
+        spec_text, kind = entry
+        self._kind.set(kind)
         self.editor.delete("1.0", tk.END)
-        self.editor.insert("1.0", spec)
+        self.editor.insert("1.0", spec_text)
         # Examples come out of a .md block, not a spec file - drop any file
         # we were watching so Reload cannot pull an unrelated diagram back.
         self._path = None
@@ -326,7 +370,7 @@ class FlowchartStudio(tk.Tk):
     # -- File operations ---------------------------------------------------
     def new_spec(self):
         self.editor.delete("1.0", tk.END)
-        self.editor.insert("1.0", DEFAULT_SPEC)
+        self.editor.insert("1.0", DEFAULT_SPECS[self._kind.get()])
         # No longer tied to a file - stop watching the previous one.
         self._path = None
         self._disk_mtime = None
@@ -336,8 +380,8 @@ class FlowchartStudio(tk.Tk):
 
     def open_spec(self):
         path = filedialog.askopenfilename(
-            title="Open flowchart spec", filetypes=[("JSON", "*.json"),
-                                                     ("All files", "*.*")])
+            title="Open diagram spec", filetypes=[("JSON", "*.json"),
+                                                   ("All files", "*.*")])
         if not path:
             return
         if not os.path.exists(path):
@@ -426,7 +470,7 @@ class FlowchartStudio(tk.Tk):
 
     def save_spec(self):
         path = filedialog.asksaveasfilename(
-            title="Save flowchart spec", defaultextension=".json",
+            title="Save diagram spec", defaultextension=".json",
             filetypes=[("JSON", "*.json")])
         if not path:
             return
@@ -494,12 +538,20 @@ class FlowchartStudio(tk.Tk):
             self.status.set(f"JSON error: {exc}")
             return
 
+        # Keep the Kind selector truthful: whatever is actually in the editor
+        # decides which renderer runs, not whichever kind happened to be
+        # selected before this file/paste/edit arrived.
+        detected = _detect_kind(spec)
+        if detected is not None:
+            self._kind.set(detected)
+
+        kind = self._kind.get()
+        render_fn, _fence = RENDERERS.get(kind, RENDERERS["flow"])
+
         try:
-            n_nodes = len(spec.get("nodes", []))
-            n_edges = len(spec.get("edges", []))
-            flowchart.render(spec, TMP_PNG)
+            render_fn(spec, TMP_PNG)
         except Exception as exc:                       # noqa: BLE001
-            self.status.set(f"Render error: {exc}")
+            self.status.set(f"Render error ({kind}): {exc}")
             return
 
         try:
@@ -510,8 +562,7 @@ class FlowchartStudio(tk.Tk):
 
         self._refresh_preview()
         w, h = self._current_image.size
-        self.status.set(f"Rendered OK — {w}x{h}px, {n_nodes} nodes, "
-                        f"{n_edges} edges.")
+        self.status.set(f"Rendered OK ({kind}) — {w}x{h}px.")
 
     def _refresh_preview(self):
         if self._current_image is None:
@@ -539,7 +590,7 @@ class FlowchartStudio(tk.Tk):
     def _show_help(self):
         win = tk.Toplevel(self)
         win.title("Spec format")
-        win.geometry("640x560")
+        win.geometry("720x640")
         text = tk.Text(win, wrap="word", font=("Consolas", 10), padx=10,
                        pady=10)
         text.insert("1.0", HELP_TEXT)
