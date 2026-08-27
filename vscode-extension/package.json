@@ -1,8 +1,8 @@
 {
   "name": "flowchart-studio-preview",
   "displayName": "Flowchart Studio Preview",
-  "description": "Renders ```flow fenced code blocks (Flowchart Studio spec) inline in the built-in Markdown preview.",
-  "version": "0.1.0",
+  "description": "Renders ```flow, ```timeline, and ```sequence fenced code blocks (Flowchart Studio spec) inline in the built-in Markdown preview.",
+  "version": "0.3.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.75.0"
@@ -26,8 +26,8 @@
         },
         "flowchartStudio.scriptPath": {
           "type": "string",
-          "default": "C:\\MyFile\\Tools\\FlowChartStudio\\flowchart.py",
-          "description": "Path to flowchart.py."
+          "default": "",
+          "description": "Path to flowchart.py. Leave blank (the default) to use the flowchart.py bundled inside this extension's own folder, which is always the correct copy and survives version bumps. Set this only to point at a different copy, e.g. one you are actively editing elsewhere."
         }
       }
     }
