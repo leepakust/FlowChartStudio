@@ -1,6 +1,6 @@
-# Flowchart Studio Preview
+# Engineering Diagram Studio Preview
 
-Renders ` ```flow `, ` ```timeline `, and ` ```sequence ` fenced code blocks
+Renders ` ```flow `, ` ```timeline `, ` ```sequence `, and ` ```tasks ` fenced code blocks
 (the Flowchart Studio JSON specs used by `flowchart.py`) inline in VS Code's
 built-in Markdown preview — the same way the Mermaid extension renders
 ` ```mermaid ` blocks.
@@ -32,7 +32,7 @@ diagrams look identical to the ones already embedded in your Word docs.
 
      Do **not** put the version number in this setting. An earlier manifest
      hardcoded `…flowchart-studio-preview-0.1.0\flowchart.py` as the default;
-     after the folder was bumped to `-0.3.0` the extension kept pointing at
+     after the folder was bumped to `-0.4.0` the extension kept pointing at
      the old, now-deleted folder and silently rendered with a stale script.
 
 2. Load the extension, either:
@@ -41,7 +41,7 @@ diagrams look identical to the ones already embedded in your Word docs.
    directory and reload VS Code (keep the folder name's version in step
    with `"version"` in `package.json`):
    ```
-   xcopy /E /I "<folder path>\vscode-extension" "%USERPROFILE%\.vscode\extensions\flowchart-studio-preview-0.3.0"
+   xcopy /E /I "<folder path>\vscode-extension" "%USERPROFILE%\.vscode\extensions\flowchart-studio-preview-0.4.0"
    ```
    Then run **Developer: Reload Window** from the Command Palette.
 
@@ -54,7 +54,7 @@ Open **View → Output → "Flowchart Studio"**. Each re-render logs the script
 it used:
 
 ```
-render flow block via C:\Users\...\flowchart-studio-preview-0.3.0\flowchart.py (49805 bytes)
+render flow block via C:\Users\...\flowchart-studio-preview-0.4.0\flowchart.py (49805 bytes)
 ```
 
 Confirm that path and byte count match the `flowchart.py` you edited. If it

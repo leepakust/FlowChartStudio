@@ -1,8 +1,8 @@
 {
   "name": "flowchart-studio-preview",
-  "displayName": "Flowchart Studio Preview",
-  "description": "Renders ```flow, ```timeline, and ```sequence fenced code blocks (Flowchart Studio spec) inline in the built-in Markdown preview.",
-  "version": "0.3.0",
+  "displayName": "Engineering Diagram Studio Preview",
+  "description": "Renders flow, timeline, sequence, and RTOS task-sequencer blocks inline in the built-in Markdown preview.",
+  "version": "0.4.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.75.0"
@@ -17,7 +17,7 @@
   "contributes": {
     "markdown.markdownItPlugins": true,
     "configuration": {
-      "title": "Flowchart Studio Preview",
+      "title": "Engineering Diagram Studio Preview",
       "properties": {
         "flowchartStudio.pythonPath": {
           "type": "string",

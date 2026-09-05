@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/engineering-diagram/tasks.schema.json",
+  "title": "Engineering Diagram Studio - RTOS Task Sequencer",
+  "type": "object",
+  "required": ["duration_ms", "tasks", "segments"],
+  "properties": {
+    "title": {"type": "string"},
+    "duration_ms": {"type": "number", "exclusiveMinimum": 0},
+    "chart_width": {"type": "number", "minimum": 5.5, "maximum": 12.0},
+    "unit_label": {"type": "string"},
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "label"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "label": {"type": "string"},
+          "priority": {"type": ["integer", "string"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task", "start", "end"],
+        "properties": {
+          "task": {"type": "string"},
+          "start": {"type": "number"},
+          "end": {"type": "number"},
+          "state": {"enum": ["running", "ready", "blocked", "suspended", "isr"]},
+          "label": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from": {"$ref": "#/$defs/point"},
+          "to": {"$ref": "#/$defs/point"},
+          "label": {"type": "string"},
+          "style": {"type": "string"},
+          "dashed": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["t"],
+        "properties": {
+          "t": {"type": "number"},
+          "label": {"type": "string"},
+          "style": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "$defs": {
+    "point": {
+      "type": "object",
+      "required": ["task", "t"],
+      "properties": {
+        "task": {"type": "string"},
+        "t": {"type": "number"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

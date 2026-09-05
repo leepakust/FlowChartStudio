@@ -1,0 +1,53 @@
+{
+  "$schema": "../schemas/timeline.schema.json",
+  "title": "1 kHz acquisition timing",
+  "duration_ms": 10,
+  "lanes": [
+    {
+      "id": "adc",
+      "label": "ADC ISR"
+    },
+    {
+      "id": "ctrl",
+      "label": "ControlTask"
+    },
+    {
+      "id": "comm",
+      "label": "CommsTask"
+    }
+  ],
+  "bars": [
+    {
+      "lane": "adc",
+      "start": 0.0,
+      "end": 0.15,
+      "label": "sample",
+      "style": "warn"
+    },
+    {
+      "lane": "ctrl",
+      "start": 0.18,
+      "end": 0.75,
+      "label": "filter + control",
+      "style": "state"
+    },
+    {
+      "lane": "comm",
+      "start": 0.8,
+      "end": 1.4,
+      "label": "publish"
+    }
+  ],
+  "events": [
+    {
+      "t": 0.0,
+      "label": "timer IRQ",
+      "style": "danger"
+    },
+    {
+      "t": 0.18,
+      "label": "notify",
+      "style": "state"
+    }
+  ]
+}

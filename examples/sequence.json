@@ -1,0 +1,54 @@
+{
+  "$schema": "../schemas/sequence.schema.json",
+  "title": "Command path",
+  "actors": [
+    {
+      "id": "app",
+      "label": "Application"
+    },
+    {
+      "id": "api",
+      "label": "Control API"
+    },
+    {
+      "id": "task",
+      "label": "ControlTask"
+    },
+    {
+      "id": "drv",
+      "label": "Driver"
+    }
+  ],
+  "messages": [
+    {
+      "from": "app",
+      "to": "api",
+      "label": "set_target()"
+    },
+    {
+      "from": "api",
+      "to": "api",
+      "label": "validate + enqueue"
+    },
+    {
+      "from": "api",
+      "to": "app",
+      "label": "ACCEPTED",
+      "dashed": true
+    },
+    {
+      "note": "Next scheduler wake"
+    },
+    {
+      "from": "task",
+      "to": "api",
+      "label": "dequeue()"
+    },
+    {
+      "from": "task",
+      "to": "drv",
+      "label": "apply_output()",
+      "async": true
+    }
+  ]
+}

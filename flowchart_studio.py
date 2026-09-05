@@ -1,7 +1,7 @@
-"""Flowchart Studio -- a small desktop UI around flowchart.py.
+"""Engineering Diagram Studio -- a desktop UI around flowchart.py.
 
 Lets you write/edit a diagram JSON spec (flowchart/state-machine, timeline,
-or sequence diagram) and see the rendered PNG update live, without going
+sequence diagram, or RTOS task sequencer) and see the rendered preview update live, without going
 through mkdocx.py / build.py / a Word rebuild at all. Uses the exact same
 render functions the design docs are built with, so what you see here is
 byte-identical to what would land in a docx figure.
@@ -34,6 +34,7 @@ import io
 import json
 import os
 import re
+import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -49,7 +50,9 @@ except ImportError:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(os.path.dirname(HERE), "_src")
-TMP_PNG = os.path.join(HERE, "_studio_preview.png")
+# Each process owns its preview; installed application resources are read-only.
+_PREVIEW_DIR = tempfile.TemporaryDirectory(prefix="EngineeringDiagramStudio-")
+TMP_PNG = os.path.join(_PREVIEW_DIR.name, "preview.png")
 
 # How often to check whether the open spec changed underneath us. Polling
 # mtime rather than using a filesystem watcher keeps this dependency-free;
@@ -63,6 +66,7 @@ RENDERERS = {
     "flow":     (flowchart.render,          "flow"),
     "timeline": (flowchart.render_timeline, "timeline"),
     "sequence": (flowchart.render_sequence, "sequence"),
+    "tasks":    (flowchart.render_tasks,    "tasks"),
 }
 KIND_LABELS = list(RENDERERS.keys())
 
@@ -78,15 +82,7 @@ def _detect_kind(spec):
     spec is complete enough to identify; mid-edit/incomplete JSON returns
     None and the caller leaves the current selection alone.
     """
-    if not isinstance(spec, dict):
-        return None
-    if "actors" in spec and "messages" in spec:
-        return "sequence"
-    if "lanes" in spec:
-        return "timeline"
-    if "nodes" in spec:
-        return "flow"
-    return None
+    return flowchart.detect_kind(spec)
 
 DEFAULT_SPECS = {
     "flow": """{
@@ -138,6 +134,32 @@ DEFAULT_SPECS = {
   ]
 }
 """,
+    "tasks": """{
+  "title": "FreeRTOS control cycle",
+  "duration_ms": 5,
+  "tasks": [
+    {"id":"isr",  "label":"ADC ISR",     "priority":"IRQ"},
+    {"id":"ctrl", "label":"ControlTask", "priority":4},
+    {"id":"comm", "label":"CommsTask",   "priority":2},
+    {"id":"idle", "label":"IdleTask",    "priority":0}
+  ],
+  "segments": [
+    {"task":"ctrl", "start":0.00, "end":1.00, "state":"blocked", "label":"wait notify"},
+    {"task":"idle", "start":0.00, "end":1.00, "state":"running", "label":"idle"},
+    {"task":"isr",  "start":1.00, "end":1.08, "state":"isr",     "label":"ADC IRQ"},
+    {"task":"ctrl", "start":1.08, "end":1.70, "state":"running", "label":"filter + PID"},
+    {"task":"comm", "start":1.70, "end":2.10, "state":"running", "label":"publish"},
+    {"task":"idle", "start":2.10, "end":5.00, "state":"running", "label":"idle"}
+  ],
+  "links": [
+    {"from":{"task":"isr","t":1.08}, "to":{"task":"ctrl","t":1.08}, "label":"notify"},
+    {"from":{"task":"ctrl","t":1.70}, "to":{"task":"comm","t":1.70}, "label":"queue"}
+  ],
+  "events": [
+    {"t":1.0, "label":"ADC interrupt", "style":"danger"}
+  ]
+}
+""",
 }
 
 # The studio's help is just flowchart.py's own module docstring - showing it
@@ -149,7 +171,7 @@ HELP_TEXT = flowchart.__doc__ or "(no docstring found on flowchart.py)"
 class FlowchartStudio(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Flowchart Studio")
+        self.title("Engineering Diagram Studio")
         self.geometry("1280x800")
 
         self._render_after_id = None
@@ -178,6 +200,7 @@ class FlowchartStudio(tk.Tk):
         self.bind_all("<Control-r>", lambda e: self.reload_spec())
         self.bind_all("<Control-s>", lambda e: self.save_spec())
         self.bind_all("<Control-S>", lambda e: self.export_png())
+        self.bind_all("<Control-Shift-F>", lambda e: self.format_json())
         self.editor.bind("<<Modified>>", self._on_modified)
         self.preview_canvas.bind("<Control-c>", lambda e: self.copy_image())
         self.bind("<Configure>", self._on_resize, add="+")
@@ -191,15 +214,26 @@ class FlowchartStudio(tk.Tk):
         filem = tk.Menu(m, tearoff=0)
         filem.add_command(label="New", command=self.new_spec)
         filem.add_command(label="Open spec...  (Ctrl+O)", command=self.open_spec)
+        filem.add_command(label="Open Markdown diagrams...",
+                          command=self.open_markdown)
         filem.add_command(label="Reload from disk  (Ctrl+R)",
                           command=self.reload_spec)
         filem.add_command(label="Save spec...  (Ctrl+S)", command=self.save_spec)
         filem.add_separator()
         filem.add_command(label="Export PNG...  (Ctrl+Shift+S)",
                           command=self.export_png)
+        filem.add_command(label="Export SVG...", command=self.export_svg)
+        filem.add_command(label="Export PDF...", command=self.export_pdf)
         filem.add_separator()
         filem.add_command(label="Exit", command=self.destroy)
         m.add_cascade(label="File", menu=filem)
+
+        toolm = tk.Menu(m, tearoff=0)
+        toolm.add_command(label="Validate specification",
+                          command=self.validate_current)
+        toolm.add_command(label="Format JSON  (Ctrl+Shift+F)",
+                          command=self.format_json)
+        m.add_cascade(label="Tools", menu=toolm)
 
         helpm = tk.Menu(m, tearoff=0)
         helpm.add_command(label="Spec format...", command=self._show_help)
@@ -212,6 +246,10 @@ class FlowchartStudio(tk.Tk):
 
         ttk.Button(bar, text="Render (F5)", command=self.render_now).pack(
             side=tk.LEFT, padx=(0, 8))
+        ttk.Button(bar, text="Validate", command=self.validate_current).pack(
+            side=tk.LEFT, padx=(0, 8))
+        ttk.Button(bar, text="Format JSON", command=self.format_json).pack(
+            side=tk.LEFT, padx=(0, 10))
         ttk.Checkbutton(bar, text="Auto-render", variable=self._auto).pack(
             side=tk.LEFT, padx=(0, 12))
 
@@ -241,7 +279,7 @@ class FlowchartStudio(tk.Tk):
         zoom_box.pack(side=tk.LEFT, padx=(4, 12))
         zoom_box.bind("<<ComboboxSelected>>", lambda e: self._refresh_preview())
 
-        ttk.Button(bar, text="Export PNG...", command=self.export_png).pack(
+        ttk.Button(bar, text="Export...", command=self.export_any).pack(
             side=tk.LEFT, padx=(0, 8))
         if HAVE_CLIPBOARD:
             ttk.Button(bar, text="Copy image", command=self.copy_image).pack(
@@ -302,15 +340,22 @@ class FlowchartStudio(tk.Tk):
 
     # -- Examples --------------------------------------------------------
     def _load_examples(self):
-        """Scan _src/*.md for every fenced ```flow / ```timeline / ```sequence
-        block flowchart.py can render, so all three kinds get real,
-        already-in-the-docs examples rather than just the one built-in
-        default per kind.
-        """
+        """Load built-in examples, then augment them from documentation."""
         pattern = os.path.join(SRC_DIR, "*.md")
         fence_re = re.compile(
-            r"```(flow|timeline|sequence)\s*\n(.*?)```", re.S)
-        found = []
+            r"```(flow|timeline|sequence|tasks)\s*\n(.*?)```", re.S)
+        found = [(f"Built-in [{kind}]", (text.strip(), kind))
+                 for kind, text in DEFAULT_SPECS.items()]
+        for path in sorted(glob.glob(os.path.join(HERE, "examples", "*.json"))):
+            try:
+                with open(path, encoding="utf-8") as example_file:
+                    text = example_file.read()
+                spec = json.loads(text)
+                kind = _detect_kind(spec)
+                if kind in RENDERERS:
+                    found.append((f"{os.path.basename(path)} [{kind}]", (text, kind)))
+            except (OSError, ValueError):
+                continue
         for path in sorted(glob.glob(pattern)):
             name = os.path.basename(path)
             try:
@@ -331,8 +376,7 @@ class FlowchartStudio(tk.Tk):
                 found.append((label, (block, kind)))
         self._examples = dict(found)
         self.example_box["values"] = list(self._examples.keys())
-        self.status.set(f"Ready. {len(found)} example figures loaded from "
-                        f"_src/*.md.")
+        self.status.set(f"Ready. {len(found)} example diagrams available.")
 
     def _on_example_pick(self, _event):
         label = self.example_box.get()
@@ -381,8 +425,12 @@ class FlowchartStudio(tk.Tk):
     def open_spec(self):
         path = filedialog.askopenfilename(
             title="Open diagram spec", filetypes=[("JSON", "*.json"),
+                                                   ("Markdown", "*.md"),
                                                    ("All files", "*.*")])
         if not path:
+            return
+        if path.lower().endswith(".md"):
+            self._open_markdown_path(path)
             return
         if not os.path.exists(path):
             messagebox.showerror("Open failed", f"No such file:\n{path}")
@@ -391,6 +439,83 @@ class FlowchartStudio(tk.Tk):
         if not self._load_from_disk():
             self._path = None
             self._set_title()
+
+    def open_markdown(self):
+        path = filedialog.askopenfilename(
+            title="Open Markdown document",
+            filetypes=[("Markdown", "*.md"), ("All files", "*.*")])
+        if path:
+            self._open_markdown_path(path)
+
+    def _open_markdown_path(self, path):
+        try:
+            text = open(path, encoding="utf8").read()
+        except OSError as exc:
+            messagebox.showerror("Open failed", str(exc))
+            return
+        fence_re = re.compile(
+            r"```(flow|timeline|sequence|tasks)\s*\n(.*?)```", re.S)
+        blocks = []
+        counters = {}
+        for kind, raw in fence_re.findall(text):
+            raw = raw.strip()
+            try:
+                spec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            counters[kind] = counters.get(kind, 0) + 1
+            name = spec.get("title") or spec.get("caption") \
+                or f"{kind} {counters[kind]}"
+            blocks.append((f"[{kind}] {name}", raw, kind))
+        if not blocks:
+            messagebox.showinfo(
+                "No diagrams found",
+                "No valid ```flow, ```timeline, ```sequence or ```tasks "
+                "JSON blocks were found in this Markdown file.")
+            return
+        if len(blocks) == 1:
+            self._load_markdown_block(blocks[0], path)
+            return
+
+        chooser = tk.Toplevel(self)
+        chooser.title(f"Choose diagram - {os.path.basename(path)}")
+        chooser.geometry("560x360")
+        ttk.Label(chooser, text="Diagrams in this Markdown document:",
+                  padding=(10, 10)).pack(anchor="w")
+        lb = tk.Listbox(chooser, font=("Segoe UI", 10))
+        lb.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 8))
+        for label, _raw, _kind in blocks:
+            lb.insert(tk.END, label)
+        lb.selection_set(0)
+
+        def accept(_event=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            self._load_markdown_block(blocks[sel[0]], path)
+            chooser.destroy()
+
+        buttons = ttk.Frame(chooser, padding=(10, 0, 10, 10))
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="Open", command=accept).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Cancel", command=chooser.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8))
+        lb.bind("<Double-1>", accept)
+
+    def _load_markdown_block(self, block, source_path):
+        label, raw, kind = block
+        self._kind.set(kind)
+        self.editor.delete("1.0", tk.END)
+        self.editor.insert("1.0", raw)
+        # Imported blocks are deliberately detached: Save writes a JSON spec
+        # rather than silently editing a fenced region inside Markdown.
+        self._path = None
+        self._disk_mtime = None
+        self._set_title()
+        self._mark_clean()
+        self.render_now()
+        self.status.set(f"Imported {label} from {os.path.basename(source_path)}. "
+                        "Save creates a standalone JSON spec.")
 
     def reload_spec(self):
         """Re-read the open spec from disk (Ctrl+R / toolbar button).
@@ -464,9 +589,9 @@ class FlowchartStudio(tk.Tk):
 
     def _set_title(self):
         if self._path:
-            self.title(f"Flowchart Studio - {os.path.basename(self._path)}")
+            self.title(f"Engineering Diagram Studio - {os.path.basename(self._path)}")
         else:
-            self.title("Flowchart Studio")
+            self.title("Engineering Diagram Studio")
 
     def save_spec(self):
         path = filedialog.asksaveasfilename(
@@ -504,6 +629,125 @@ class FlowchartStudio(tk.Tk):
         self._current_image.save(path)
         self.status.set(f"Exported PNG to {path}")
 
+    def _export_vector(self, ext, label):
+        parsed = self._parse_and_validate(show_dialog=True)
+        if parsed is None:
+            return
+        spec, kind, _report = parsed
+        path = filedialog.asksaveasfilename(
+            title=f"Export {label}", defaultextension=f".{ext}",
+            filetypes=[(f"{label} file", f"*.{ext}")])
+        if not path:
+            return
+        render_fn, _fence = RENDERERS[kind]
+        try:
+            render_fn(spec, path)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(f"Export {label} failed", str(exc))
+            return
+        self.status.set(f"Exported {label} to {path}")
+
+    def export_svg(self):
+        self._export_vector("svg", "SVG")
+
+    def export_pdf(self):
+        self._export_vector("pdf", "PDF")
+
+    def export_any(self):
+        parsed = self._parse_and_validate(show_dialog=True)
+        if parsed is None:
+            return
+        spec, kind, _report = parsed
+        path = filedialog.asksaveasfilename(
+            title="Export diagram",
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png"), ("SVG vector", "*.svg"),
+                       ("PDF vector", "*.pdf")])
+        if not path:
+            return
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".png":
+            # Re-render instead of saving the preview bitmap so the export
+            # path always uses the renderer's native output settings.
+            render_fn, _fence = RENDERERS[kind]
+            render_fn(spec, path)
+        elif ext in (".svg", ".pdf"):
+            render_fn, _fence = RENDERERS[kind]
+            render_fn(spec, path)
+        else:
+            messagebox.showerror("Unsupported format",
+                                 "Choose PNG, SVG or PDF.")
+            return
+        self.status.set(f"Exported {ext[1:].upper()} to {path}")
+
+    def _clear_error_highlight(self):
+        self.editor.tag_remove("json_error", "1.0", tk.END)
+
+    def _highlight_error_line(self, lineno):
+        self._clear_error_highlight()
+        self.editor.tag_configure("json_error", background="#FFE4E4")
+        self.editor.tag_add("json_error", f"{lineno}.0", f"{lineno}.end")
+        self.editor.see(f"{lineno}.0")
+
+    def _parse_and_validate(self, show_dialog=False):
+        raw = self.editor.get("1.0", "end-1c")
+        self._clear_error_highlight()
+        try:
+            spec = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._highlight_error_line(exc.lineno)
+            msg = f"JSON line {exc.lineno}, column {exc.colno}: {exc.msg}"
+            self.status.set(msg)
+            if show_dialog:
+                messagebox.showerror("Invalid JSON", msg)
+            return None
+
+        detected = _detect_kind(spec)
+        if detected is not None:
+            self._kind.set(detected)
+        kind = self._kind.get()
+        try:
+            report = flowchart.validate_spec(spec, kind)
+        except flowchart.SpecValidationError as exc:
+            msg = "Specification error: " + " | ".join(exc.errors[:3])
+            if len(exc.errors) > 3:
+                msg += f" (+{len(exc.errors) - 3} more)"
+            self.status.set(msg)
+            if show_dialog:
+                messagebox.showerror("Invalid specification",
+                                     "\n\n".join(exc.errors))
+            return None
+        return spec, kind, report
+
+    def validate_current(self):
+        parsed = self._parse_and_validate(show_dialog=True)
+        if parsed is None:
+            return False
+        _spec, kind, report = parsed
+        if report["warnings"]:
+            messagebox.showwarning("Specification valid with warnings",
+                                   "\n".join(report["warnings"]))
+            self.status.set(f"Valid {kind} spec with {len(report['warnings'])} warning(s).")
+        else:
+            self.status.set(f"Specification valid ({kind}).")
+        return True
+
+    def format_json(self):
+        raw = self.editor.get("1.0", "end-1c")
+        try:
+            spec = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._highlight_error_line(exc.lineno)
+            self.status.set(f"Cannot format: JSON line {exc.lineno}: {exc.msg}")
+            return
+        yview = self.editor.yview()[0]
+        formatted = json.dumps(spec, indent=2, ensure_ascii=False)
+        self.editor.delete("1.0", tk.END)
+        self.editor.insert("1.0", formatted + "\n")
+        self.editor.yview_moveto(yview)
+        self.editor.edit_modified(True)
+        self.status.set("JSON formatted.")
+
     def copy_image(self):
         if not HAVE_CLIPBOARD:
             messagebox.showinfo("Not available",
@@ -531,21 +775,10 @@ class FlowchartStudio(tk.Tk):
             self.after_cancel(self._render_after_id)
             self._render_after_id = None
 
-        raw = self.editor.get("1.0", "end-1c")
-        try:
-            spec = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            self.status.set(f"JSON error: {exc}")
+        parsed = self._parse_and_validate(show_dialog=False)
+        if parsed is None:
             return
-
-        # Keep the Kind selector truthful: whatever is actually in the editor
-        # decides which renderer runs, not whichever kind happened to be
-        # selected before this file/paste/edit arrived.
-        detected = _detect_kind(spec)
-        if detected is not None:
-            self._kind.set(detected)
-
-        kind = self._kind.get()
+        spec, kind, report = parsed
         render_fn, _fence = RENDERERS.get(kind, RENDERERS["flow"])
 
         try:
@@ -562,7 +795,9 @@ class FlowchartStudio(tk.Tk):
 
         self._refresh_preview()
         w, h = self._current_image.size
-        self.status.set(f"Rendered OK ({kind}) — {w}x{h}px.")
+        suffix = (f" — {len(report['warnings'])} warning(s)"
+                  if report["warnings"] else "")
+        self.status.set(f"Rendered OK ({kind}) — {w}x{h}px{suffix}.")
 
     def _refresh_preview(self):
         if self._current_image is None:
