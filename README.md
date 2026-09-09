@@ -10,7 +10,8 @@ Commercial use requires a separate written license; see
 license because commercial use is restricted.
 
 Desktop JSON diagram editor with live preview and PNG export. Supports
-flowcharts, timelines, sequence diagrams, and fishbone (Ishikawa) diagrams.
+flowcharts, timelines, sequence diagrams, RTOS task charts, and fishbone
+(Ishikawa) diagrams.
 
 Run `python flowchart_studio.py` with matplotlib and Pillow installed.
 
@@ -29,8 +30,9 @@ For example, `"label": "People"` becomes:
 ```
 
 The same text object works for flowchart node text and edge labels, timeline
-lane/bar/event labels, sequence actors/messages/notes, and fishbone headings,
-effects and causes. It formats the entire label, including every wrapped line.
+lane/bar/event labels, sequence actors/messages/notes, task labels/segments/
+events/links, and fishbone headings, effects and causes. It formats the entire
+label, including every wrapped line.
 Font sizes are 4–72 points. The palette contains black, white, gray, silver,
 red, maroon, yellow, olive, lime, green, aqua, teal, blue, navy, fuchsia and purple.
 

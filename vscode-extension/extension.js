@@ -29,7 +29,7 @@ function deactivate() {}
 
 // Fence languages flowchart.py can render, one per RENDERERS entry on its
 // CLI (see the __main__ block at the bottom of flowchart.py).
-const FLOW_KINDS = ["flow", "timeline", "sequence", "fishbone"];
+const FLOW_KINDS = ["flow", "timeline", "sequence", "tasks", "fishbone"];
 
 // Called by the built-in Markdown preview extension once this extension has
 // activated (triggered by the "markdown.markdownItPlugins" contribution).

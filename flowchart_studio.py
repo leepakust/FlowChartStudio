@@ -67,6 +67,7 @@ RENDERERS = {
     "flow":     (flowchart.render,          "flow"),
     "timeline": (flowchart.render_timeline, "timeline"),
     "sequence": (flowchart.render_sequence, "sequence"),
+    "tasks":    (flowchart.render_tasks,    "tasks"),
     "fishbone": (flowchart.render_fishbone, "fishbone"),
 }
 KIND_LABELS = list(RENDERERS.keys())
@@ -87,6 +88,8 @@ def _detect_kind(spec):
         return None
     if "effect" in spec or "categories" in spec:
         return "fishbone"
+    if "tasks" in spec and "segments" in spec:
+        return "tasks"
     if "actors" in spec and "messages" in spec:
         return "sequence"
     if "lanes" in spec:
@@ -155,6 +158,29 @@ DEFAULT_SPECS = {
     {"from":"b", "to":"b", "label":"self-check", "self":true},
     {"from":"b", "to":"a", "label":"return", "dashed":true},
     {"note":"~10 ms later"}
+  ]
+}
+""",
+    "tasks": """{
+  "title": "FreeRTOS control cycle",
+  "duration_ms": 5,
+  "tasks": [
+    {"id":"isr",  "label":"ADC ISR",     "priority":"IRQ"},
+    {"id":"ctrl", "label":"ControlTask", "priority":4},
+    {"id":"idle", "label":"IdleTask",    "priority":0}
+  ],
+  "segments": [
+    {"task":"ctrl", "start":0.00, "end":1.00, "state":"blocked", "label":"wait notify"},
+    {"task":"idle", "start":0.00, "end":1.00, "state":"running", "label":"idle"},
+    {"task":"isr",  "start":1.00, "end":1.08, "state":"isr",     "label":"ADC IRQ"},
+    {"task":"ctrl", "start":1.08, "end":1.70, "state":"running", "label":"filter + PID"},
+    {"task":"idle", "start":1.70, "end":5.00, "state":"running", "label":"idle"}
+  ],
+  "links": [
+    {"from":{"task":"isr","t":1.08}, "to":{"task":"ctrl","t":1.08}, "label":"notify"}
+  ],
+  "events": [
+    {"t":1.0, "label":"ADC interrupt", "style":"danger"}
   ]
 }
 """,

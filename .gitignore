@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .build-venv/
 .build-python/
+.test-deps/
 build/
 dist/
 release/

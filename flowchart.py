@@ -7,11 +7,12 @@ markdown source) to PNGs suitable for embedding in a Word document. No
 external binaries required (matplotlib only) -- Graphviz/mermaid are not
 available on the build machine.
 
-Four diagram kinds, each with its own fence tag and render() entry point:
+Five diagram kinds, each with its own fence tag and render() entry point:
 
   ```flow      -> render()          flowcharts and UML-ish state machines
   ```timeline  -> render_timeline() swimlane timing / sequencing charts
   ```sequence  -> render_sequence() UML-style sequence diagrams
+  ```tasks     -> render_tasks()    RTOS task state / CPU schedule charts
   ```fishbone  -> render_fishbone() cause-and-effect (Ishikawa) diagrams
 
 TEXT FORMATTING (all chart types)
@@ -336,6 +337,345 @@ RAIL_SEP = 0.50           # push step when a rail would overlap another rail
 SPREAD_MAX_X = 0.34       # default fan-out on a node's top/bottom side
 ALIGN_SPREAD = 0.16       # fan-out when several straight edges share a side
 
+FLOW_SHAPES = {"box", "terminal", "decision", "io", "note",
+               "state", "start", "final"}
+FLOW_ROUTES = {"", "left", "right", "self", "self-top",
+               "self-left", "self-right"}
+TASK_STATES = {"running", "ready", "blocked", "suspended", "isr"}
+
+
+class SpecValidationError(ValueError):
+    """A collection of actionable errors found in a diagram spec."""
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        super().__init__("\n".join(self.errors))
+
+
+def detect_kind(spec):
+    """Detect a diagram kind from its top-level fields."""
+    if not isinstance(spec, dict):
+        return None
+    if "effect" in spec or "categories" in spec:
+        return "fishbone"
+    if "tasks" in spec and "segments" in spec:
+        return "tasks"
+    if "actors" in spec and "messages" in spec:
+        return "sequence"
+    if "lanes" in spec:
+        return "timeline"
+    if "nodes" in spec:
+        return "flow"
+    return None
+
+
+def _is_num(value):
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(float(value)))
+
+
+def _is_text(value):
+    """Accept both plain labels and the public formatted-text object form."""
+    return (isinstance(value, str) or
+            isinstance(value, dict) and isinstance(value.get("text"), str)
+            and set(value) <= OPTIONS | {"text"})
+
+
+def validate_spec(spec, kind=None):
+    """Validate a spec and raise all semantic errors in one message."""
+    errors, warnings = [], []
+    if not isinstance(spec, dict):
+        raise SpecValidationError(["Top level must be a JSON object."])
+
+    detected = detect_kind(spec)
+    kind = detected if kind in (None, "auto") else kind
+    if kind is None:
+        raise SpecValidationError([
+            "Could not detect diagram kind. Expected nodes, lanes, "
+            "actors/messages, tasks/segments, or categories/effect."
+        ])
+    if detected and detected != kind:
+        warnings.append(f"Selected kind '{kind}' differs from detected kind "
+                        f"'{detected}'.")
+
+    if kind == "flow":
+        nodes = spec.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            errors.append("'nodes' must be a non-empty array.")
+            nodes = []
+        ids = set()
+        auto_layout = spec.get("layout") == "auto" or any(
+            isinstance(node, dict) and
+            ("col" not in node or "row" not in node) for node in nodes)
+        for i, node in enumerate(nodes):
+            path = f"nodes[{i}]"
+            if not isinstance(node, dict):
+                errors.append(f"{path} must be an object.")
+                continue
+            node_id = node.get("id")
+            if not isinstance(node_id, str) or not node_id.strip():
+                errors.append(f"{path}.id must be a non-empty string.")
+            elif node_id in ids:
+                errors.append(f"Duplicate node id '{node_id}'.")
+            else:
+                ids.add(node_id)
+            shape = node.get("shape", "box")
+            if shape not in FLOW_SHAPES:
+                errors.append(f"{path}.shape '{shape}' is unknown. Allowed: "
+                              f"{', '.join(sorted(FLOW_SHAPES))}.")
+            if shape not in MARKER_SHAPES and not _is_text(node.get("text")):
+                errors.append(f"{path}.text must be a string or formatted "
+                              "text object.")
+            if not auto_layout and (not _is_num(node.get("col")) or
+                                    not _is_num(node.get("row"))):
+                errors.append(f"{path} needs numeric col/row, or set "
+                              "top-level layout to 'auto'.")
+        edges = spec.get("edges", [])
+        if not isinstance(edges, list):
+            errors.append("'edges' must be an array.")
+            edges = []
+        for i, edge in enumerate(edges):
+            path = f"edges[{i}]"
+            if not isinstance(edge, (list, tuple)) or not 2 <= len(edge) <= 6:
+                errors.append(f"{path} must contain 2..6 fields: "
+                              "[src, dst, label, route, shift, lane].")
+                continue
+            if edge[0] not in ids:
+                errors.append(f"{path} references unknown source node "
+                              f"'{edge[0]}'.")
+            if edge[1] not in ids:
+                errors.append(f"{path} references unknown target node "
+                              f"'{edge[1]}'.")
+            route = edge[3] if len(edge) > 3 else ""
+            if route not in FLOW_ROUTES:
+                errors.append(f"{path} route '{route}' is invalid.")
+            if len(edge) > 4 and not _is_num(edge[4]):
+                errors.append(f"{path} shift must be numeric.")
+            if len(edge) > 5 and not _is_num(edge[5]):
+                errors.append(f"{path} lane must be numeric.")
+
+    elif kind == "timeline":
+        lanes = spec.get("lanes")
+        if not isinstance(lanes, list) or not lanes:
+            errors.append("'lanes' must be a non-empty array.")
+            lanes = []
+        lane_ids = set()
+        for i, lane in enumerate(lanes):
+            path = f"lanes[{i}]"
+            if not isinstance(lane, dict):
+                errors.append(f"{path} must be an object.")
+                continue
+            lane_id = lane.get("id")
+            if not isinstance(lane_id, str) or not lane_id:
+                errors.append(f"{path}.id must be a non-empty string.")
+            elif lane_id in lane_ids:
+                errors.append(f"Duplicate lane id '{lane_id}'.")
+            else:
+                lane_ids.add(lane_id)
+            if not _is_text(lane.get("label")):
+                errors.append(f"{path}.label must be text.")
+        duration = spec.get("duration_ms")
+        if not _is_num(duration) or float(duration) <= 0:
+            errors.append("duration_ms must be a positive number.")
+        for group in ("bars", "events", "ticks"):
+            items = spec.get(group, [])
+            if not isinstance(items, list):
+                errors.append(f"'{group}' must be an array.")
+                continue
+            for i, item in enumerate(items):
+                path = f"{group}[{i}]"
+                if not isinstance(item, dict):
+                    errors.append(f"{path} must be an object.")
+                    continue
+                if group != "events" and item.get("lane") not in lane_ids:
+                    errors.append(f"{path} references unknown lane "
+                                  f"'{item.get('lane')}'.")
+                if group == "bars":
+                    if not _is_num(item.get("start")) or not _is_num(item.get("end")):
+                        errors.append(f"{path}.start/end must be numeric.")
+                    elif float(item["end"]) <= float(item["start"]):
+                        errors.append(f"{path}.end must be greater than start.")
+                elif not _is_num(item.get("t")):
+                    errors.append(f"{path}.t must be numeric.")
+
+    elif kind == "sequence":
+        actors = spec.get("actors")
+        if not isinstance(actors, list) or not actors:
+            errors.append("'actors' must be a non-empty array.")
+            actors = []
+        actor_ids = set()
+        for i, actor in enumerate(actors):
+            path = f"actors[{i}]"
+            if not isinstance(actor, dict):
+                errors.append(f"{path} must be an object.")
+                continue
+            actor_id = actor.get("id")
+            if not isinstance(actor_id, str) or not actor_id:
+                errors.append(f"{path}.id must be a non-empty string.")
+            elif actor_id in actor_ids:
+                errors.append(f"Duplicate actor id '{actor_id}'.")
+            else:
+                actor_ids.add(actor_id)
+            if not _is_text(actor.get("label")):
+                errors.append(f"{path}.label must be text.")
+        messages = spec.get("messages", [])
+        if not isinstance(messages, list):
+            errors.append("'messages' must be an array.")
+            messages = []
+        for i, message in enumerate(messages):
+            path = f"messages[{i}]"
+            if not isinstance(message, dict):
+                errors.append(f"{path} must be an object.")
+            elif "note" in message:
+                if not _is_text(message["note"]):
+                    errors.append(f"{path}.note must be text.")
+            else:
+                if message.get("from") not in actor_ids:
+                    errors.append(f"{path} references unknown 'from' actor "
+                                  f"'{message.get('from')}'.")
+                if message.get("to") not in actor_ids:
+                    errors.append(f"{path} references unknown 'to' actor "
+                                  f"'{message.get('to')}'.")
+
+    elif kind == "tasks":
+        tasks = spec.get("tasks")
+        if not isinstance(tasks, list) or not tasks:
+            errors.append("'tasks' must be a non-empty array.")
+            tasks = []
+        task_ids = set()
+        for i, task in enumerate(tasks):
+            path = f"tasks[{i}]"
+            if not isinstance(task, dict):
+                errors.append(f"{path} must be an object.")
+                continue
+            task_id = task.get("id")
+            if not isinstance(task_id, str) or not task_id:
+                errors.append(f"{path}.id must be a non-empty string.")
+            elif task_id in task_ids:
+                errors.append(f"Duplicate task id '{task_id}'.")
+            else:
+                task_ids.add(task_id)
+            if not _is_text(task.get("label")):
+                errors.append(f"{path}.label must be text.")
+        duration = spec.get("duration_ms")
+        if not _is_num(duration) or float(duration) <= 0:
+            errors.append("duration_ms must be a positive number.")
+        segments = spec.get("segments")
+        if not isinstance(segments, list):
+            errors.append("'segments' must be an array.")
+            segments = []
+        for i, segment in enumerate(segments):
+            path = f"segments[{i}]"
+            if not isinstance(segment, dict):
+                errors.append(f"{path} must be an object.")
+                continue
+            if segment.get("task") not in task_ids:
+                errors.append(f"{path} references unknown task "
+                              f"'{segment.get('task')}'.")
+            if not _is_num(segment.get("start")) or not _is_num(segment.get("end")):
+                errors.append(f"{path}.start/end must be numeric.")
+            elif float(segment["end"]) <= float(segment["start"]):
+                errors.append(f"{path}.end must be greater than start.")
+            state = segment.get("state", "running")
+            if state not in TASK_STATES:
+                errors.append(f"{path}.state '{state}' is invalid. Allowed: "
+                              f"{', '.join(sorted(TASK_STATES))}.")
+        links = spec.get("links", [])
+        if not isinstance(links, list):
+            errors.append("'links' must be an array.")
+            links = []
+        for i, link in enumerate(links):
+            path = f"links[{i}]"
+            if not isinstance(link, dict):
+                errors.append(f"{path} must be an object.")
+                continue
+            for side in ("from", "to"):
+                point = link.get(side)
+                if not isinstance(point, dict):
+                    errors.append(f"{path}.{side} must contain task/t.")
+                elif point.get("task") not in task_ids:
+                    errors.append(f"{path}.{side} references unknown task "
+                                  f"'{point.get('task')}'.")
+                elif not _is_num(point.get("t")):
+                    errors.append(f"{path}.{side}.t must be numeric.")
+
+    elif kind == "fishbone":
+        categories = spec.get("categories")
+        if not isinstance(categories, list) or not categories:
+            errors.append("categories must be a non-empty array.")
+        if not _is_text(spec.get("effect")):
+            errors.append("effect must be text.")
+    else:
+        errors.append(f"Unknown diagram kind '{kind}'.")
+
+    if errors:
+        raise SpecValidationError(errors)
+    return {"kind": kind, "warnings": warnings}
+
+
+def _auto_layout(spec):
+    """Assign stable rows and columns to a flow graph."""
+    nodes = spec["nodes"]
+    ids = [node["id"] for node in nodes]
+    outgoing = {node_id: [] for node_id in ids}
+    incoming = {node_id: [] for node_id in ids}
+    for edge in spec.get("edges", []):
+        if (len(edge) >= 2 and edge[0] != edge[1] and
+                edge[0] in outgoing and edge[1] in outgoing):
+            outgoing[edge[0]].append(edge[1])
+            incoming[edge[1]].append(edge[0])
+
+    roots = [node_id for node_id in ids if not incoming[node_id]] or ids[:1]
+    depth = {node_id: None for node_id in ids}
+    queue = list(roots)
+    for root in roots:
+        depth[root] = 0
+    index = 0
+    while index < len(queue):
+        source = queue[index]
+        index += 1
+        for target in outgoing[source]:
+            if depth[target] is None:
+                depth[target] = depth[source] + 1
+                queue.append(target)
+    max_depth = max((d for d in depth.values() if d is not None), default=-1)
+    for node_id in ids:
+        if depth[node_id] is not None:
+            continue
+        max_depth += 1
+        depth[node_id] = max_depth
+        queue = [node_id]
+        index = 0
+        while index < len(queue):
+            source = queue[index]
+            index += 1
+            for target in outgoing[source]:
+                if depth[target] is None:
+                    depth[target] = depth[source] + 1
+                    queue.append(target)
+
+    rows, positions = {}, {}
+    order = {node_id: i for i, node_id in enumerate(ids)}
+    node_map = {node["id"]: node for node in nodes}
+    for node_id in ids:
+        rows.setdefault(depth[node_id], []).append(node_id)
+    for row in sorted(rows):
+        members = rows[row]
+
+        def sort_key(node_id):
+            parents = [p for p in incoming[node_id] if p in positions]
+            parent_x = (sum(positions[p] for p in parents) / len(parents)
+                        if parents else 0.0)
+            return parent_x, order[node_id]
+
+        members.sort(key=sort_key)
+        for column, node_id in zip(
+                (i - (len(members) - 1) / 2 for i in range(len(members))),
+                members):
+            positions[node_id] = column
+            node_map[node_id]["col"] = column
+            node_map[node_id]["row"] = row
+
 
 def _wrap(text, shape):
     width = 22 if shape == "decision" else 26
@@ -346,8 +686,8 @@ def _wrap(text, shape):
 
 
 def _xy(node):
-    return (node.get("_x", node["col"] * COL_W),
-            node.get("_y", -node["row"] * ROW_H))
+    return (node["_x"] if "_x" in node else node["col"] * COL_W,
+            node["_y"] if "_y" in node else -node["row"] * ROW_H)
 
 
 def _place_text(ax, node):
@@ -966,6 +1306,10 @@ def render(spec, out_path):
     if isinstance(spec, str):
         spec = json.loads(spec)
     spec = _prepare_text(spec)
+    validate_spec(spec, "flow")
+    if spec.get("layout") == "auto" or any(
+            "col" not in node or "row" not in node for node in spec["nodes"]):
+        _auto_layout(spec)
 
     nodes = {n["id"]: n for n in spec["nodes"]}
 
@@ -1073,6 +1417,36 @@ def _tl_nice_step(span_ms):
     return raw
 
 
+def _estimate_text_width(text, fontsize=TL_FONT):
+    """Conservative width estimate in inches for collision planning."""
+    longest = max((len(line) for line in str(text).split("\n")), default=0)
+    return max(0.35, longest * fontsize * 0.0062 + 0.18)
+
+
+def _event_label_levels(events, t_to_local_x):
+    """Greedily stagger labels for events that occur close together."""
+    occupied, levels = [], []
+    for event in events:
+        label = event.get("label", "")
+        if not label:
+            levels.append(0)
+            continue
+        x = t_to_local_x(float(event["t"]))
+        half_width = _estimate_text_width(label, TL_FONT - 0.4) / 2
+        interval = x - half_width, x + half_width
+        level = 0
+        while True:
+            if level == len(occupied):
+                occupied.append([])
+            if not any(interval[0] < right and interval[1] > left
+                       for left, right in occupied[level]):
+                occupied[level].append(interval)
+                break
+            level += 1
+        levels.append(level)
+    return levels
+
+
 def render_timeline(spec, out_path):
     """Render a swimlane timing chart (see module docstring) to a PNG.
 
@@ -1085,6 +1459,7 @@ def render_timeline(spec, out_path):
     if isinstance(spec, str):
         spec = json.loads(spec)
     spec = _prepare_text(spec)
+    validate_spec(spec, "timeline")
     scale = _font_scale(spec)
     TL_LABEL_W, TL_ROW_H = 1.9 * scale, 0.62 * scale
     TL_TOP_STRIP, TL_AXIS_H = 0.85 * scale, 0.42 * scale
@@ -1238,6 +1613,7 @@ def render_sequence(spec, out_path):
     if isinstance(spec, str):
         spec = json.loads(spec)
     spec = _prepare_text(spec)
+    validate_spec(spec, "sequence")
     scale = _font_scale(spec)
     SQ_ACTOR_W, SQ_HEADER_H = 2.0 * scale, 0.55 * scale
 
@@ -1335,6 +1711,222 @@ def render_sequence(spec, out_path):
                         ha="center", va="bottom", color="#222222",
                         linespacing=1.15,
                         bbox=dict(fc="white", ec="none", pad=1.0))
+
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06,
+                facecolor="white")
+    plt.close(fig)
+    return out_path
+
+
+# ============================================================================
+# RTOS TASK SEQUENCER
+# ============================================================================
+
+TS_FONT = 7.8
+TASK_STATE_STYLE = {
+    "running": ("state", 1.00, "-"),
+    "isr": ("warn", 1.00, "-"),
+    "ready": ("ok", 0.58, "-"),
+    "blocked": ("idle", 0.55, "--"),
+    "suspended": ("note", 0.42, ":"),
+}
+
+
+def render_tasks(spec, out_path):
+    """Render task states, CPU ownership, events and inter-task links."""
+    if isinstance(spec, str):
+        spec = json.loads(spec)
+    spec = _prepare_text(spec)
+    validate_spec(spec, "tasks")
+    scale = _font_scale(spec)
+
+    tasks = spec["tasks"]
+    segments = spec.get("segments", [])
+    duration = float(spec["duration_ms"])
+    task_ix = {task["id"]: i for i, task in enumerate(tasks)}
+    task_map = {task["id"]: task for task in tasks}
+
+    def display_task_label(task):
+        priority = task.get("priority")
+        if priority is None:
+            return task["label"]
+        suffix = f"P{priority}" if str(priority).isdigit() else str(priority)
+        return _keep_style(task["label"], f"{task['label']}  [{suffix}]")
+
+    label_w = max(
+        2.25 * scale,
+        max((_estimate_text_width(display_task_label(task), TS_FONT * scale)
+             + 0.14 for task in tasks), default=2.25))
+    label_w = min(label_w, 4.5 * scale)
+    chart_w = min(max(float(spec.get("chart_width", 8.5)), 5.5), 12.0) * scale
+    ms_per_in = duration / chart_w
+
+    events = spec.get("events", [])
+    event_levels = _event_label_levels(events, lambda t: t / ms_per_in)
+    event_strip_h = (0.44 + 0.34 *
+                     ((max(event_levels) + 1) if events else 0)) * scale
+    title = spec.get("title")
+    title_h = 0.34 * scale if title else 0.0
+    row_h, cpu_h, axis_h = 0.64 * scale, 0.46 * scale, 0.42 * scale
+    rows_h = len(tasks) * row_h
+    fig_w = label_w + chart_w + 0.35 * scale
+    fig_h = title_h + event_strip_h + cpu_h + rows_h + axis_h
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=200)
+    ax._text_options = spec.get("text_format", {})
+    ax.set_xlim(0, fig_w)
+    ax.set_ylim(0, fig_h)
+    ax.axis("off")
+    ax.set_aspect("equal")
+
+    def t_x(value):
+        return label_w + float(value) / ms_per_in
+
+    top = fig_h - title_h
+    cpu_top = top - event_strip_h
+    cpu_bottom = cpu_top - cpu_h
+    task_top = cpu_bottom
+    axis_y = task_top - rows_h
+
+    if title:
+        _text(ax, fig_w / 2, fig_h - title_h * 0.6, title,
+              fontsize=FONT + 1.2, fontweight="bold", ha="center",
+              va="center", color="#222222")
+
+    for event, level in zip(events, event_levels):
+        x = t_x(event["t"])
+        style = STYLE.get(event.get("style", "box"), STYLE["box"])
+        ax.plot([x, x], [axis_y, cpu_top], color=style["ec"], lw=1.0,
+                linestyle="--", alpha=0.75, zorder=1)
+        ax.plot([x], [cpu_top], marker="v", color=style["ec"],
+                markersize=5, zorder=5)
+        if event.get("label"):
+            _text(ax, x, cpu_top + (0.08 + level * 0.34) * scale,
+                  event["label"], fontsize=TS_FONT - 0.3, ha="center",
+                  va="bottom", color=style["ec"], zorder=6,
+                  linespacing=1.1,
+                  bbox=dict(fc="white", ec=style["ec"], lw=0.6, pad=1.3))
+
+    _text(ax, label_w - 0.08, (cpu_top + cpu_bottom) / 2, "CPU",
+          fontsize=TS_FONT, fontweight="bold", ha="right", va="center",
+          color="#333333")
+    ax.add_patch(Rectangle((label_w, cpu_bottom), chart_w, cpu_h,
+                           facecolor="#FAFAFA", edgecolor="#D0D0D0",
+                           linewidth=0.8, zorder=0))
+    cpu_segments = [segment for segment in segments
+                    if segment.get("state", "running") in ("running", "isr")]
+    for segment in sorted(cpu_segments,
+                          key=lambda item: (float(item["start"]),
+                                            task_ix[item["task"]])):
+        x0 = t_x(max(0.0, float(segment["start"])))
+        x1 = t_x(min(duration, float(segment["end"])))
+        if x1 <= x0:
+            continue
+        state = segment.get("state", "running")
+        style_name, alpha, _ = TASK_STATE_STYLE[state]
+        style = STYLE[style_name]
+        ax.add_patch(Rectangle((x0, cpu_bottom + 0.05 * scale), x1 - x0,
+                               cpu_h - 0.10 * scale, facecolor=style["fc"],
+                               edgecolor=style["ec"], linewidth=1.0,
+                               alpha=alpha, zorder=2))
+        task_label = task_map[segment["task"]]["label"]
+        short_label = _keep_style(task_label, str(task_label).split("\n")[0])
+        if x1 - x0 >= _estimate_text_width(short_label, TS_FONT - 1.0):
+            _text(ax, (x0 + x1) / 2, (cpu_top + cpu_bottom) / 2,
+                  short_label, fontsize=TS_FONT - 1.0, ha="center",
+                  va="center", color="#222222", zorder=3)
+
+    def task_center(task_id):
+        return task_top - row_h * task_ix[task_id] - row_h / 2
+
+    for task in tasks:
+        index = task_ix[task["id"]]
+        row_bottom = task_top - row_h * (index + 1)
+        band = "#FAFAFA" if index % 2 == 0 else "#FFFFFF"
+        ax.add_patch(Rectangle((label_w, row_bottom), chart_w, row_h,
+                               facecolor=band, edgecolor="none", zorder=0))
+        ax.plot([label_w, label_w + chart_w], [row_bottom, row_bottom],
+                color="#DDDDDD", lw=0.8, zorder=1)
+        _text(ax, label_w - 0.08, row_bottom + row_h / 2,
+              display_task_label(task), fontsize=TS_FONT, ha="right",
+              va="center", color="#333333")
+
+    for segment in segments:
+        x0 = t_x(max(0.0, float(segment["start"])))
+        x1 = t_x(min(duration, float(segment["end"])))
+        if x1 <= x0:
+            continue
+        center_y = task_center(segment["task"])
+        height = row_h * 0.66
+        state = segment.get("state", "running")
+        style_name, alpha, line_style = TASK_STATE_STYLE[state]
+        style = STYLE[style_name]
+        ax.add_patch(FancyBboxPatch(
+            (x0, center_y - height / 2), x1 - x0, height,
+            boxstyle="round,pad=0,rounding_size=0.04",
+            facecolor=style["fc"], edgecolor=style["ec"],
+            linewidth=style["lw"], linestyle=line_style, alpha=alpha,
+            zorder=2))
+        label = segment.get("label", "")
+        if not label:
+            continue
+        font_size = TS_FONT - 0.7
+        if x1 - x0 >= _estimate_text_width(label, font_size):
+            _text(ax, (x0 + x1) / 2, center_y, label, fontsize=font_size,
+                  ha="center", va="center", color="#222222", zorder=3,
+                  linespacing=1.1)
+        else:
+            if x1 + 1.0 < label_w + chart_w:
+                label_x, align = x1 + 0.04, "left"
+            else:
+                label_x, align = x0 - 0.04, "right"
+            _text(ax, label_x, center_y, label, fontsize=font_size - 0.3,
+                  ha=align, va="center", color="#222222", zorder=4,
+                  bbox=dict(fc="white", ec="none", pad=0.5))
+
+    for link in spec.get("links", []):
+        source, target = link["from"], link["to"]
+        x0, y0 = t_x(source["t"]), task_center(source["task"])
+        x1, y1 = t_x(target["t"]), task_center(target["task"])
+        style = STYLE.get(link.get("style", "state"), STYLE["state"])
+        ax.add_patch(FancyArrowPatch(
+            (x0, y0), (x1, y1), arrowstyle="->", mutation_scale=10,
+            color=style["ec"], lw=1.0,
+            linestyle="--" if link.get("dashed") else "-",
+            connectionstyle=("arc3,rad=0" if abs(x1 - x0) > 1e-6
+                             else "arc3,rad=0.08"), zorder=5))
+        if link.get("label"):
+            _text(ax, (x0 + x1) / 2 + 0.04, (y0 + y1) / 2,
+                  link["label"], fontsize=TS_FONT - 1.0, ha="left",
+                  va="center", color=style["ec"], zorder=6,
+                  bbox=dict(fc="white", ec="none", pad=0.5))
+
+    legend_y, legend_x = cpu_top + 0.08 * scale, 0.08
+    for state in ("running", "ready", "blocked"):
+        style_name, alpha, line_style = TASK_STATE_STYLE[state]
+        style = STYLE[style_name]
+        ax.add_patch(Rectangle((legend_x, legend_y), 0.16, 0.10,
+                               facecolor=style["fc"], edgecolor=style["ec"],
+                               linewidth=0.8, linestyle=line_style,
+                               alpha=alpha, zorder=4))
+        _text(ax, legend_x + 0.20, legend_y + 0.05, state,
+              fontsize=TS_FONT - 1.2, ha="left", va="center",
+              color="#555555")
+        legend_x += 0.62
+
+    ax.plot([label_w, label_w + chart_w], [axis_y, axis_y],
+            color="#333333", lw=1.0, zorder=2)
+    step, tick = _tl_nice_step(duration), 0.0
+    while tick <= duration + 1e-9:
+        x = t_x(tick)
+        ax.plot([x, x], [axis_y, axis_y - 0.05], color="#333333", lw=0.8)
+        _text(ax, x, axis_y - 0.10 * scale, f"{tick:g}",
+              fontsize=TS_FONT - 1.0, ha="center", va="top",
+              color="#333333")
+        tick += step
+    _text(ax, label_w + chart_w, axis_y - 0.28 * scale,
+          spec.get("unit_label", "ms"), fontsize=TS_FONT - 1.0,
+          ha="right", va="top", color="#666666", style="italic")
 
     fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06,
                 facecolor="white")
@@ -1531,13 +2123,14 @@ def render_fishbone(spec, out_path):
 
 
 if __name__ == "__main__":
-    # Usage: python flowchart.py [flow|timeline|sequence|fishbone] spec.json out.png
+    # Usage: python flowchart.py [flow|timeline|sequence|tasks|fishbone] spec.json out.png
     # The kind defaults to "flow" so existing callers (spec.json out.png,
     # two args) keep working unchanged.
     import sys
 
     RENDERERS = {"flow": render, "timeline": render_timeline,
-                "sequence": render_sequence, "fishbone": render_fishbone}
+                 "sequence": render_sequence, "tasks": render_tasks,
+                 "fishbone": render_fishbone}
 
     args = sys.argv[1:]
     kind = args[0] if args and args[0] in RENDERERS else "flow"
