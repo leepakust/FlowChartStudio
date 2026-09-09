@@ -1,8 +1,9 @@
 {
   "name": "flowchart-studio-preview",
   "displayName": "Flowchart Studio Preview",
-  "description": "Renders ```flow, ```timeline, and ```sequence fenced code blocks (Flowchart Studio spec) inline in the built-in Markdown preview.",
+  "description": "Renders ```flow, ```timeline, ```sequence, and ```fishbone fenced code blocks (Flowchart Studio spec) inline in the built-in Markdown preview.",
   "version": "0.3.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.75.0"

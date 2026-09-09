@@ -1,0 +1,24 @@
+{
+  "title": "Why is the project delayed?",
+  "effect": "Project delay",
+  "categories": [
+    {
+      "label": "People",
+      "causes": [
+        {
+          "label": "Training gaps",
+          "causes": ["No onboarding", "No mentoring"]
+        },
+        "Staff shortage"
+      ]
+    },
+    {
+      "label": "Process",
+      "causes": ["Manual approval", "Unclear priorities"]
+    },
+    {
+      "label": "Technology",
+      "causes": ["System downtime", "Outdated tools"]
+    }
+  ]
+}

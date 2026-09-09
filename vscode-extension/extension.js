@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright 2026 Patrick Lee
 "use strict";
 
 const vscode = require("vscode");
@@ -27,7 +29,7 @@ function deactivate() {}
 
 // Fence languages flowchart.py can render, one per RENDERERS entry on its
 // CLI (see the __main__ block at the bottom of flowchart.py).
-const FLOW_KINDS = ["flow", "timeline", "sequence"];
+const FLOW_KINDS = ["flow", "timeline", "sequence", "fishbone"];
 
 // Called by the built-in Markdown preview extension once this extension has
 // activated (triggered by the "markdown.markdownItPlugins" contribution).
@@ -102,6 +104,9 @@ function renderFlowBlock(kind, spec) {
     .update(kind)
     .update(spec)
     .update(scriptContent)
+    .update(fs.existsSync(path.join(path.dirname(scriptPath), "text_format.py"))
+      ? fs.readFileSync(path.join(path.dirname(scriptPath), "text_format.py"))
+      : "")
     .digest("hex");
   const cachedPng = path.join(cacheDir, `${hash}.png`);
 

@@ -1,0 +1,16 @@
+{
+  "title": {"text": "Why is the project delayed?", "font_size": 16, "bold": true, "color": "#000080"},
+  "effect": {"text": "Project delay", "bold": true, "color": "#800000"},
+  "text_format": {"font_size": 11},
+  "categories": [
+    {"label": {"text": "People", "font_size": 14, "bold": true, "underline": true}, "causes": [
+      {"label": {"text": "Training gaps", "italic": true, "color": "#800080"}, "causes": [
+        {"text": "No onboarding", "underline": true, "color": "#000080"},
+        "No mentoring"
+      ]},
+      "Staff shortage"
+    ]},
+    {"label": "Process", "causes": ["Manual approval", "Unclear priorities"]},
+    {"label": "Technology", "causes": [{"text": "System downtime", "bold": true, "color": "#008080"}, "Outdated tools"]}
+  ]
+}

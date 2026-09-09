@@ -1,6 +1,12 @@
 # Flowchart Studio Preview
 
-Renders ` ```flow `, ` ```timeline `, and ` ```sequence ` fenced code blocks
+## License
+
+Copyright © 2026 Patrick Lee. This extension is distributed under the
+[PolyForm Noncommercial License 1.0.0](../LICENSE). Commercial use requires a
+separate written license; see [Commercial licensing](../COMMERCIAL-LICENSE.md).
+
+Renders ` ```flow `, ` ```timeline `, ` ```sequence `, and ` ```fishbone ` fenced code blocks
 (the Flowchart Studio JSON specs used by `flowchart.py`) inline in VS Code's
 built-in Markdown preview — the same way the Mermaid extension renders
 ` ```mermaid ` blocks.
@@ -8,7 +14,7 @@ built-in Markdown preview — the same way the Mermaid extension renders
 ## How it works
 
 This extension registers a `markdown-it` fence renderer for the `flow`,
-`timeline`, and `sequence` languages. When the preview hits one of those
+`timeline`, `sequence`, and `fishbone` languages. When the preview hits one of those
 blocks it:
 
 1. Hashes the block's kind, JSON content, and renderer script path.
@@ -69,6 +75,10 @@ keyed by the diagram kind, the block's JSON, **and the contents of
 automatically. Deleting that folder forces a full re-render.
 
 ## Notes / limitations
+
+- Text formatting is supported in every diagram kind. Keep the bundled
+  `text_format.py` beside `flowchart.py`; when using a custom script path,
+  copy both files. Changes to either file invalidate the preview cache.
 
 - Only works in VS Code's **built-in** Markdown preview (the one opened with
   `Ctrl+Shift+V` / "Open Preview"). Extensions like "Markdown Preview

@@ -1,0 +1,15 @@
+{
+  "title": "Root cause analysis",
+  "effect": "Delayed delivery",
+  "categories": [
+    {"label": "People", "causes": [
+      {"label": "Training gaps", "causes": ["No onboarding", "No mentoring"]},
+      "Staff shortage"
+    ]},
+    {"label": "Methods", "causes": ["Manual approval", "Unclear priorities"]},
+    {"label": "Machines", "causes": ["Equipment downtime", "Slow systems"]},
+    {"label": "Materials", "causes": ["Supplier delays", "Missing parts"]},
+    {"label": "Measurement", "causes": ["Inaccurate estimates", "No progress tracking"]},
+    {"label": "Environment", "causes": ["Workspace constraints", "Transport disruption"]}
+  ]
+}
