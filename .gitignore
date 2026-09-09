@@ -1,2 +1,8 @@
 __pycache__/
-.test-deps/
+*.pyc
+.build-venv/
+.build-python/
+build/
+dist/
+release/
+_studio_preview.png

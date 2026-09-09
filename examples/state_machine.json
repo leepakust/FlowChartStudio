@@ -1,0 +1,64 @@
+{
+  "$schema": "../schemas/flow.schema.json",
+  "title": "Motor state machine",
+  "layout": "auto",
+  "nodes": [
+    {
+      "id": "init",
+      "shape": "start"
+    },
+    {
+      "id": "idle",
+      "text": "IDLE",
+      "shape": "state"
+    },
+    {
+      "id": "run",
+      "text": "RUNNING\ndo / control loop",
+      "shape": "state"
+    },
+    {
+      "id": "fault",
+      "text": "FAULT",
+      "shape": "state",
+      "style": "danger"
+    },
+    {
+      "id": "end",
+      "shape": "final"
+    }
+  ],
+  "edges": [
+    [
+      "init",
+      "idle"
+    ],
+    [
+      "idle",
+      "run",
+      "start"
+    ],
+    [
+      "run",
+      "run",
+      "tick",
+      "self-right"
+    ],
+    [
+      "run",
+      "fault",
+      "fault"
+    ],
+    [
+      "fault",
+      "idle",
+      "reset",
+      "right"
+    ],
+    [
+      "idle",
+      "end",
+      "shutdown"
+    ]
+  ]
+}

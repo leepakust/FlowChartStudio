@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/engineering-diagram/flow.schema.json",
+  "title": "Engineering Diagram Studio - Flow / State Machine",
+  "type": "object",
+  "required": ["nodes"],
+  "properties": {
+    "title": {"type": "string"},
+    "caption": {"type": "string"},
+    "layout": {"enum": ["auto", "manual"]},
+    "w": {"type": "number", "exclusiveMinimum": 0},
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "shape"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "text": {"type": "string"},
+          "shape": {"enum": ["box", "terminal", "decision", "io", "note", "state", "start", "final"]},
+          "style": {"enum": ["box", "terminal", "decision", "io", "note", "state", "start", "final", "danger", "warn", "ok", "idle"]},
+          "col": {"type": "number"},
+          "row": {"type": "number"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 6,
+        "prefixItems": [
+          {"type": "string"},
+          {"type": "string"},
+          {"type": "string"},
+          {"enum": ["", "left", "right", "self", "self-top", "self-left", "self-right"]},
+          {"type": "number"},
+          {"type": "number"}
+        ]
+      }
+    }
+  },
+  "additionalProperties": true
+}

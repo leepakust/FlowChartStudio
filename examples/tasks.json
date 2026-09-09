@@ -1,0 +1,123 @@
+{
+  "$schema": "../schemas/tasks.schema.json",
+  "title": "FreeRTOS control cycle",
+  "duration_ms": 5,
+  "tasks": [
+    {
+      "id": "isr",
+      "label": "ADC ISR",
+      "priority": "IRQ"
+    },
+    {
+      "id": "ctrl",
+      "label": "ControlTask",
+      "priority": 4
+    },
+    {
+      "id": "comm",
+      "label": "CommsTask",
+      "priority": 2
+    },
+    {
+      "id": "idle",
+      "label": "IdleTask",
+      "priority": 0
+    }
+  ],
+  "segments": [
+    {
+      "task": "ctrl",
+      "start": 0.0,
+      "end": 1.0,
+      "state": "blocked",
+      "label": "wait notify"
+    },
+    {
+      "task": "comm",
+      "start": 0.0,
+      "end": 1.7,
+      "state": "blocked",
+      "label": "queue wait"
+    },
+    {
+      "task": "idle",
+      "start": 0.0,
+      "end": 1.0,
+      "state": "running",
+      "label": "idle"
+    },
+    {
+      "task": "isr",
+      "start": 1.0,
+      "end": 1.08,
+      "state": "isr",
+      "label": "ADC IRQ"
+    },
+    {
+      "task": "ctrl",
+      "start": 1.08,
+      "end": 1.7,
+      "state": "running",
+      "label": "filter + PID"
+    },
+    {
+      "task": "comm",
+      "start": 1.7,
+      "end": 2.1,
+      "state": "running",
+      "label": "publish"
+    },
+    {
+      "task": "ctrl",
+      "start": 1.7,
+      "end": 5.0,
+      "state": "blocked",
+      "label": "wait notify"
+    },
+    {
+      "task": "comm",
+      "start": 2.1,
+      "end": 5.0,
+      "state": "blocked",
+      "label": "queue wait"
+    },
+    {
+      "task": "idle",
+      "start": 2.1,
+      "end": 5.0,
+      "state": "running",
+      "label": "idle"
+    }
+  ],
+  "links": [
+    {
+      "from": {
+        "task": "isr",
+        "t": 1.08
+      },
+      "to": {
+        "task": "ctrl",
+        "t": 1.08
+      },
+      "label": "notify"
+    },
+    {
+      "from": {
+        "task": "ctrl",
+        "t": 1.7
+      },
+      "to": {
+        "task": "comm",
+        "t": 1.7
+      },
+      "label": "queue"
+    }
+  ],
+  "events": [
+    {
+      "t": 1.0,
+      "label": "ADC interrupt",
+      "style": "danger"
+    }
+  ]
+}

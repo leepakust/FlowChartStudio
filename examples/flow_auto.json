@@ -1,0 +1,67 @@
+{
+  "$schema": "../schemas/flow.schema.json",
+  "title": "Sensor acquisition flow",
+  "layout": "auto",
+  "nodes": [
+    {
+      "id": "start",
+      "text": "Task start",
+      "shape": "terminal"
+    },
+    {
+      "id": "read",
+      "text": "Read ADC sample",
+      "shape": "io"
+    },
+    {
+      "id": "valid",
+      "text": "Sample valid?",
+      "shape": "decision"
+    },
+    {
+      "id": "filter",
+      "text": "Filter + compensate",
+      "shape": "box"
+    },
+    {
+      "id": "fault",
+      "text": "Increment fault counter",
+      "shape": "note"
+    },
+    {
+      "id": "done",
+      "text": "Publish sample",
+      "shape": "terminal"
+    }
+  ],
+  "edges": [
+    [
+      "start",
+      "read"
+    ],
+    [
+      "read",
+      "valid"
+    ],
+    [
+      "valid",
+      "filter",
+      "yes"
+    ],
+    [
+      "valid",
+      "fault",
+      "no"
+    ],
+    [
+      "fault",
+      "read",
+      "retry",
+      "right"
+    ],
+    [
+      "filter",
+      "done"
+    ]
+  ]
+}

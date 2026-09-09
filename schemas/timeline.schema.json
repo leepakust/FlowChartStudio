@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/engineering-diagram/timeline.schema.json",
+  "title": "Engineering Diagram Studio - Timeline",
+  "type": "object",
+  "required": ["duration_ms", "lanes"],
+  "properties": {
+    "title": {"type": "string"},
+    "duration_ms": {"type": "number", "exclusiveMinimum": 0},
+    "chart_width": {"type": "number", "minimum": 5.5, "maximum": 12.0},
+    "unit_label": {"type": "string"},
+    "lanes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "label"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "label": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "bars": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["lane", "start", "end"],
+        "properties": {
+          "lane": {"type": "string"},
+          "start": {"type": "number"},
+          "end": {"type": "number"},
+          "label": {"type": "string"},
+          "style": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["t"],
+        "properties": {
+          "t": {"type": "number"},
+          "label": {"type": "string"},
+          "style": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "ticks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["lane", "t"],
+        "properties": {
+          "lane": {"type": "string"},
+          "t": {"type": "number"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
